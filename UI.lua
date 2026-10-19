@@ -34,8 +34,6 @@ local trackedChars, trackedTotal = 0, 0
 local rows, list, listState = {}, {}, "nolist"
 local offset, updating = 0, false
 
-local offset, updating = 0, false
-
 ---------------------------------------------------------------------
 -- Widget helpers (same shapes as Regional Edge's Box / Text / Button)
 ---------------------------------------------------------------------
@@ -157,7 +155,7 @@ local function StatCard(parent, label, h)
     c.label:SetPoint("TOPLEFT", 12, -9)
     c.label:SetText(label)
     c.value = Text(c, 22, K.text)
-    c.value:SetPoint("TOPLEFT", 12, -21)
+    c.value:SetPoint("TOPLEFT", 12, -27)
     c.sub = Text(c, 11, K.dim)
     c.sub:SetPoint("BOTTOMLEFT", 12, 8)
     c.sub:SetPoint("RIGHT", c, "RIGHT", -12, 0)
@@ -191,85 +189,168 @@ end
 ---------------------------------------------------------------------
 -- Drawing
 ---------------------------------------------------------------------
--- stock list is sorted by profession already; put a heading row above each group
-local function Grouped(items)
-    local counts = {}
+-- lists arrive sorted by expansion; put a collapsible heading row above each group.
+-- Collapsed groups are remembered. While searching, every group stays open so
+-- matches are never hidden.
+local NO_EXP = "Other (expansion not recorded)"
+local function Grouped(items, which)
+    local counts, lumNeed = {}, {}
     for _, e in ipairs(items) do
-        local p = e.prof or "Other (no recorded crafter)"
+        local p = e.exp or NO_EXP
         counts[p] = (counts[p] or 0) + 1
+        if which == "craft" and e.lumber then
+            local g = lumNeed[p]
+            if not g then g = {}; lumNeed[p] = g end
+            for n, q in pairs(e.lumber) do g[n] = (g[n] or 0) + q end
+        end
     end
-    local res, last = {}, nil
+    local _, _, owned = ns.GetLumber()
+    local function LumberText(p)
+        local g = lumNeed[p]
+        if not g then return nil end
+        local names = {}
+        for n, q in pairs(g) do if q > 0 then names[#names + 1] = n end end
+        table.sort(names)
+        local parts = {}
+        for _, n in ipairs(names) do
+            local have, need = owned[n] or 0, g[n]
+            parts[#parts + 1] = ("|cff%s%d/%d|r %s"):format(have < need and "ff5555" or "aad951", have, need, n)
+        end
+        return #parts > 0 and table.concat(parts, "   ") or nil
+    end
+    local DB = ns.DB
+    local res, last, hidden = {}, nil, false
     for _, e in ipairs(items) do
-        local p = e.prof or "Other (no recorded crafter)"
-        if p ~= last then res[#res + 1] = { header = p, count = counts[p] }; last = p end
-        res[#res + 1] = e
+        local p = e.exp or NO_EXP
+        if p ~= last then
+            local key = which .. ":" .. p
+            local closed = DB.collapsed[key] and ns.search == ""
+            res[#res + 1] = { header = p, count = counts[p], key = key, closed = closed, lumberText = LumberText(p) }
+            last, hidden = p, closed
+        end
+        if not hidden then res[#res + 1] = e end
     end
     return res
 end
 
--- Seller view: what DecorSync has recorded on this account (characters,
--- warband bank, guild banks). Read straight from the saved data.
-local SECT = { { "bags", "bags" }, { "bank", "bank" }, { "mail", "mail" }, { "ah", "auctions" } }
+-- Seller view: what "Send my decor" would send, per character, with the
+-- warband bank and guild banks. Comes from Core, so TradeSkillMaster's counts
+-- are included; the saved character list adds characters with nothing yet.
+local SHOWN = { "bags", "bank", "mail", "auction house" }
+local SHOWN_NAME = { ["auction house"] = "auctions" }
+local srcLocs, srcAt = nil, 0
+
+local function ShortOf(key)
+    return key:match("^(.-) %- ") or key:match("^([^-]+)") or key
+end
+
 local function Tracked()
     local DB = ns.DB
-    local res, total = {}, 0
-    local keys = {}
-    for key in pairs(DB.inv or {}) do keys[#keys + 1] = key end
-    table.sort(keys)
-    for _, key in ipairs(keys) do
-        local inv = DB.inv[key]
-        local n, sum, parts = {}, 0, {}
-        for _, s in ipairs(SECT) do
-            local c = 0
-            for _, v in pairs(inv[s[1]] or {}) do c = c + v end
-            n[s[1]] = c
-            sum = sum + c
-            parts[#parts + 1] = ("%s %d"):format(s[2], c)
-        end
-        res[#res + 1] = {
-            name = key, total = sum, text = table.concat(parts, ", "),
-            tip = ("Bags: %d\nBank: %d\nMail: %d\nAuctions: %d\nUpdated %s"):format(
-                n.bags, n.bank, n.mail, n.ah, inv.at and ns.timeAgo(inv.at) or "never"),
-        }
-        total = total + sum
+    if not srcLocs or GetTime() - srcAt > 5 then      -- reading TSM isn't free
+        local ok, res = pcall(ns.SourceLocs)
+        srcLocs, srcAt = (ok and res) or {}, GetTime()
     end
+
+    local groups, order, updated = {}, {}, {}
+    local function G(who)
+        local g = groups[who]
+        if not g then g = { name = who, secs = {}, total = 0 }; groups[who] = g; order[#order + 1] = g end
+        return g
+    end
+    for key, inv in pairs(DB.inv or {}) do
+        local who = ShortOf(key)
+        G(who)
+        if inv.at and (not updated[who] or inv.at > updated[who]) then updated[who] = inv.at end
+    end
+
+    local warband, guilds = nil, {}
+    for _, list in pairs(srcLocs) do
+        for _, e in ipairs(list) do
+            local label, c = e[1], e[2]
+            if label == "warband bank" then
+                warband = (warband or 0) + c
+            elseif label:find("^guild bank %(") then
+                guilds[label] = (guilds[label] or 0) + c
+            else
+                local who, sect = label:match("^(.*) %((.-)%)$")
+                if who then
+                    local g = G(who)
+                    g.secs[sect] = (g.secs[sect] or 0) + c
+                    g.total = g.total + c
+                end
+            end
+        end
+    end
+
+    table.sort(order, function(a, b) return a.name < b.name end)
+    local res, total = {}, 0
+    for _, g in ipairs(order) do
+        local parts, lines, shown = {}, {}, {}
+        for _, sname in ipairs(SHOWN) do
+            shown[sname] = true
+            local line = ("%s %d"):format(SHOWN_NAME[sname] or sname, g.secs[sname] or 0)
+            parts[#parts + 1] = line
+            lines[#lines + 1] = line
+        end
+        local extra = {}
+        for sname, c in pairs(g.secs) do
+            if not shown[sname] and c > 0 then extra[#extra + 1] = ("%s %d"):format(sname, c) end
+        end
+        table.sort(extra)
+        for _, line in ipairs(extra) do parts[#parts + 1] = line; lines[#lines + 1] = line end
+        lines[#lines + 1] = updated[g.name] and ("Updated " .. ns.timeAgo(updated[g.name])) or "Known from TradeSkillMaster"
+        res[#res + 1] = { name = g.name, total = g.total, text = table.concat(parts, ", "), tip = table.concat(lines, "\n") }
+        total = total + g.total
+    end
+
     local wb = DB.warband
-    if wb and wb.items then
-        local c = 0
-        for _, v in pairs(wb.items) do c = c + v end
-        res[#res + 1] = {
-            name = "Warband bank", total = c, text = "updated " .. ns.timeAgo(wb.at),
-            tip = ("%d decor recorded\nUpdated %s"):format(c, ns.timeAgo(wb.at)),
-        }
+    if warband or (wb and wb.items) then
+        local c = warband or 0
+        local when = wb and wb.at and ("updated " .. ns.timeAgo(wb.at)) or "from TradeSkillMaster"
+        if ns.warbandBlocked then when = "|cffffb842NO ACCESS right now|r (last known, " .. when .. ")" end
+        res[#res + 1] = { name = "Warband bank", total = c, text = when, tip = ("%d decor\n%s"):format(c, when) }
         total = total + c
     end
-    local gnames = {}
-    for g in pairs(DB.guild or {}) do gnames[#gnames + 1] = g end
-    table.sort(gnames)
-    for _, g in ipairs(gnames) do
+
+    local gseen = {}
+    for g, data in pairs(DB.guild or {}) do
+        local label = "guild bank (" .. g .. ")"
+        gseen[label] = true
         local c = 0
-        for _, items in pairs(DB.guild[g].tabs or {}) do
-            for _, v in pairs(items) do c = c + v end
+        if DB.includeGuild then
+            c = guilds[label] or 0
+        else
+            for _, items in pairs(data.tabs or {}) do
+                for _, v in pairs(items) do c = c + v end
+            end
         end
         res[#res + 1] = {
             name = "Guild bank: " .. g, total = c,
             text = DB.includeGuild and "counted" or "not counted (guild banks are off in Setup)",
-            tip = ("%d decor recorded\n%s"):format(c, DB.includeGuild and "Counted in your stock." or "Not counted: 'Include guild banks' is off."),
+            tip = ("%d decor\n%s"):format(c, DB.includeGuild and "Counted in your stock." or "Not counted: 'Include guild banks' is off."),
         }
         if DB.includeGuild then total = total + c end
     end
-    return res, #keys, total
+    for label, c in pairs(guilds) do                  -- guilds only TSM knows
+        if not gseen[label] then
+            res[#res + 1] = { name = "Guild bank: " .. (label:match("%((.*)%)$") or label), total = c,
+                              text = "counted (TradeSkillMaster)", tip = ("%d decor\nFrom TradeSkillMaster."):format(c) }
+            total = total + c
+        end
+    end
+    return res, #order, total
 end
 
 local function DrawRows()
     for i = 1, ROWS do
         local r, e = rows[i], list[offset + i]
+        r.n2:SetText(""); r.n3:SetText("")
         if e and e.header then
             r.entry = e
             r.name:SetTextColor(unpack(K.accent))
-            r.name:SetText(("%s  (%d)"):format(e.header, e.count))
+            r.name:SetText(("%s %s  (%d)"):format(e.closed and "[+]" or "[-]", e.header, e.count))
             r.need:SetText("")
-            r.who:SetText("")
+            r.who:SetText(e.lumberText or "")
             r.bar:SetColorTexture(unpack(K.accent))
             r:Show()
         elseif e then
@@ -286,6 +367,21 @@ local function DrawRows()
                 r.need:SetText(tostring(e.have))
                 r.who:SetText(e.whereText ~= "" and e.whereText or "location unknown")
                 r.bar:SetColorTexture(unpack(K.accent))
+            elseif mode == "lumber" then
+                r.need:SetTextColor(unpack(K.text))
+                r.need:SetText(tostring(e.total))
+                r.who:SetText(e.text)
+                r.bar:SetColorTexture(unpack(K.accent))
+                local function Cell(fs, n)
+                    if n == nil or n <= 0 then
+                        fs:SetTextColor(unpack(K.faint)); fs:SetText("-")
+                    else
+                        fs:SetTextColor(unpack(e.total >= n and K.lime or { 1, 0.33, 0.33, 1 }))
+                        fs:SetText(tostring(n))
+                    end
+                end
+                Cell(r.n2, e.needAll)
+                Cell(r.n3, e.needProf)
             else
                 r.need:SetTextColor(unpack(K.text))
                 r.need:SetText(tostring(e.total))
@@ -300,9 +396,30 @@ local function DrawRows()
     end
 end
 
+-- Lumber tab (Crafter view) has two extra columns, so the columns move over.
+local layoutKind
+local function ApplyLayout(kind)
+    if layoutKind == kind then return end
+    layoutKind = kind
+    local lum = kind == "lumber"
+    for _, r in ipairs(rows) do
+        r.name:SetWidth(lum and 186 or 228)
+        r.need:ClearAllPoints(); r.need:SetPoint("LEFT", r, "LEFT", lum and 200 or 238, 0)
+        r.need:SetWidth(lum and 46 or 40)
+        r.who:ClearAllPoints()
+        r.who:SetPoint("LEFT", r, "LEFT", lum and 372 or 290, 0)
+        r.who:SetPoint("RIGHT", r, "RIGHT", -6, 0)
+    end
+    W.h2:ClearAllPoints(); W.h2:SetPoint("TOPLEFT", lum and 214 or 252, -232)
+    W.h3:ClearAllPoints(); W.h3:SetPoint("TOPLEFT", lum and 386 or 304, -232)
+end
+
 local function RefreshStatus()
     if not f then return end
     local text = ns.msg or ""
+    if ns.warbandBlocked then
+        text = "|cffffb842Warband bank: no access (other account logged in first?)|r\n" .. text
+    end
     local prog = ns.Progress()
     if prog then text = text .. "   |cffffb842" .. prog .. "|r" end
     W.statusFS:SetText(text)
@@ -310,29 +427,16 @@ local function RefreshStatus()
     if ns.DB.role == "seller" then
         W.stat1.label:SetText("CHARACTERS TRACKED")
         W.stat1.value:SetText(tostring(trackedChars))
-        W.stat1.sub:SetText("bags, bank, mail and auctions remembered")
         W.stat2.label:SetText("DECOR TRACKED")
         W.stat2.value:SetText(tostring(trackedTotal))
-        W.stat2.sub:SetText("remembered by DecorSync on this account")
-        return
-    end
-
-    W.stat1.label:SetText("DECOR TO CRAFT")
-    W.stat2.label:SetText("SELLABLE STOCK (OTHER ACCOUNT)")
-    local nrec, rec = ns.Info()
-    W.stat1.value:SetText(tostring(#needed))
-    if listState == "norecipes" then
-        W.stat1.sub:SetText("Open each profession window on each crafter")
     else
-        W.stat1.sub:SetText(("%d craftable decor recorded"):format(nrec))
+        W.stat1.label:SetText("DECOR TO CRAFT")
+        W.stat1.value:SetText(tostring(#needed))
+        W.stat2.label:SetText("DECOR IN STOCK")
+        W.stat2.value:SetText(ns.DB.received and tostring(#stock) or "-")
     end
-    if rec then
-        W.stat2.value:SetText(tostring(rec.count or 0))
-        W.stat2.sub:SetText(("from %s, %s"):format(tostring(rec.from), ns.timeAgo(rec.at)))
-    else
-        W.stat2.value:SetText("-")
-        W.stat2.sub:SetText("No decor list received yet")
-    end
+    W.stat1.sub:SetText("")
+    W.stat2.sub:SetText("")
 end
 
 local function Refresh()
@@ -343,6 +447,7 @@ local function Refresh()
     -- keep the current tab valid for the role
     if seller and (mode == "craft" or mode == "stock") then mode, offset = "tracked", 0 end
     if not seller and mode == "tracked" then mode, offset = "craft", 0 end
+    local lumberTotal = 0
     local setup = mode == "setup"
 
     local state
@@ -356,10 +461,12 @@ local function Refresh()
         stock = ns.GetStock()
         tracked, trackedChars, trackedTotal = {}, 0, 0
     end
-    if mode == "craft" then list = needed
-    elseif mode == "stock" then list = Grouped(stock)
+    if mode == "craft" then list = Grouped(needed, "craft")
+    elseif mode == "stock" then list = Grouped(stock, "stock")
     elseif mode == "tracked" then list = tracked
+    elseif mode == "lumber" then list, lumberTotal = ns.GetLumber()
     else list = {} end
+    if mode ~= "lumber" then local _, t = ns.GetLumber(); lumberTotal = t end
 
     -- first run: ask which kind of account this is
     W.chooser:SetShown(DB.role == nil)
@@ -386,19 +493,22 @@ local function Refresh()
     W.craftTab:SetShown(not seller)
     W.stockTab:SetShown(not seller)
     W.trackTab:SetShown(seller)
-    for _, t in ipairs({ { W.craftTab, "craft" }, { W.stockTab, "stock" }, { W.trackTab, "tracked" }, { W.setupTab, "setup" } }) do
+    W.lumberTab:ClearAllPoints()
+    W.lumberTab:SetPoint("TOPLEFT", seller and 164 or 294, -162)
+    for _, t in ipairs({ { W.craftTab, "craft" }, { W.stockTab, "stock" }, { W.trackTab, "tracked" }, { W.lumberTab, "lumber" }, { W.setupTab, "setup" } }) do
         t[1].text:SetTextColor(unpack(mode == t[2] and K.text or K.dim))
         t[1].underline:SetShown(mode == t[2])
     end
     W.craftTab.text:SetText(("Decor to craft  %d"):format(#needed))
     W.stockTab.text:SetText(("In stock  %d"):format(#stock))
     W.trackTab.text:SetText(("Tracked stock  %d"):format(#tracked))
+    W.lumberTab.text:SetText(("Lumber  %d"):format(lumberTotal))
     W.setupTab.text:SetText("Setup")
 
     -- which parts of the window show
     ShowAll(W.listGroup, not setup)
-    ShowAll(W.toolbar, not setup and not seller)
-    W.sellHelp:SetShown(not setup and seller)
+    ShowAll(W.toolbar, not setup and not seller and mode ~= "lumber")
+    W.sellHelp:SetShown(not setup and seller and mode == "tracked")
     W.setupPanel:SetShown(setup)
     W.csBtn:SetShown(mode == "craft")
     ShowAll(W.guildGroup, seller)
@@ -407,14 +517,27 @@ local function Refresh()
 
     if mode == "craft" then
         W.h1:SetText("DECOR"); W.h2:SetText("NEED"); W.h3:SetText("WHO CAN CRAFT IT")
-        W.footHint:SetText("Hover a row to see owned / want / need.")
+        W.footHint:SetText("Click an expansion to collapse it. Hover a row for owned / want / need.")
     elseif mode == "stock" then
         W.h1:SetText("DECOR"); W.h2:SetText("OWNED"); W.h3:SetText("WHERE IT IS")
-        W.footHint:SetText("Hover a row to see where each piece is.")
+        W.footHint:SetText("Click an expansion to collapse it. Hover a row to see where each piece is.")
+    elseif mode == "lumber" then
+        W.h1:SetText("LUMBER"); W.h2:SetText("OWNED"); W.h3:SetText("WHERE IT IS")
+        if seller then
+            W.footHint:SetText("Bags, bank and warband bank on this account. Hover a row for the breakdown.")
+        else
+            local _, _, pn = ns.LumberNeeds()
+            W.footHint:SetText("Need = lumber for what is short of Want. NEED PROF: " ..
+                (pn and ("the open " .. pn .. " window.") or "open a profession window."))
+        end
     else
         W.h1:SetText("SOURCE"); W.h2:SetText("ITEMS"); W.h3:SetText("BREAKDOWN")
         W.footHint:SetText("Hover a row for details. 'Send my decor' sends this to your crafting account.")
     end
+
+    local wide = mode == "lumber" and not seller
+    ApplyLayout(wide and "lumber" or "default")
+    W.h4:SetShown(wide and not setup); W.h5:SetShown(wide and not setup)
 
     local maxOff = math.max(0, #list - ROWS)
     if offset > maxOff then offset = maxOff end
@@ -430,7 +553,7 @@ local function Refresh()
     if #list > 0 then
         W.emptyFS:SetText("")
     elseif mode == "tracked" then
-        W.emptyFS:SetText("Nothing recorded yet.\nLog into each character that holds decor, then open its bank, mailbox and the auction house's Auctions tab once.")
+        W.emptyFS:SetText("Nothing recorded yet.\nLog into each character that holds decor, then open its bank, mailbox and the auction house's Auctions tab once (or use TradeSkillMaster).")
     elseif not DB.partner then
         W.emptyFS:SetText("Not linked to your other account yet.")
         W.emptyBtn:Show()
@@ -545,6 +668,7 @@ function ns.InitUI()
     tinsert(UISpecialFrames, "DecorSyncFrame")
 
     local function GoTo(key)
+        srcAt = 0
         mode, offset = key, 0
         Refresh()
     end
@@ -552,6 +676,7 @@ function ns.InitUI()
     -- Crafter or Seller. First choice (or switching later) lands on that role's list.
     local function SetRole(r)
         local first = DB.role == nil
+        srcAt = 0
         DB.role = r
         offset = 0
         if first or mode ~= "setup" then mode = (r == "seller") and "tracked" or "craft" end
@@ -653,6 +778,7 @@ function ns.InitUI()
     end
     W.craftTab = MakeTab("TOPLEFT", 14, 150, "craft")
     W.stockTab = MakeTab("TOPLEFT", 164, 130, "stock")
+    W.lumberTab = MakeTab("TOPLEFT", 294, 110, "lumber")
     W.trackTab = MakeTab("TOPLEFT", 14, 150, "tracked")
     W.setupTab = MakeTab("TOPRIGHT", -14, 80, "setup")
     local tabLine = f:CreateTexture(nil, "ARTWORK")
@@ -719,12 +845,15 @@ function ns.InitUI()
     W.sellHelp:SetPoint("TOPLEFT", 14, -197)
     W.sellHelp:SetWidth(WIDTH - 28)
     W.sellHelp:SetJustifyV("TOP")
-    W.sellHelp:SetText("What DecorSync has recorded on this account. Log into each character that holds decor, then open its bank, mailbox and the auction house's Auctions tab once.")
+    W.sellHelp:SetText("What 'Send my decor' will send: DecorSync's own records plus TradeSkillMaster's, if installed. Without TSM, log into each character and open its bank, mailbox and Auctions tab once.")
 
     -- column headers ------------------------------------------------------
     W.h1 = Text(f, 10, K.dim); W.h1:SetPoint("TOPLEFT", 26, -232)
     W.h2 = Text(f, 10, K.dim); W.h2:SetPoint("TOPLEFT", 252, -232)
     W.h3 = Text(f, 10, K.dim); W.h3:SetPoint("TOPLEFT", 304, -232)
+    W.h4 = Text(f, 10, K.dim); W.h4:SetPoint("TOPLEFT", 264, -232); W.h4:SetText("NEED ALL")
+    W.h5 = Text(f, 10, K.dim); W.h5:SetPoint("TOPLEFT", 324, -232); W.h5:SetText("NEED PROF")
+    W.h4:Hide(); W.h5:Hide()
 
     -- list ----------------------------------------------------------------
     local listFrame = CreateFrame("Frame", nil, f)
@@ -761,10 +890,16 @@ function ns.InitUI()
         r.who:SetPoint("LEFT", r, "LEFT", 290, 0)
         r.who:SetPoint("RIGHT", r, "RIGHT", -6, 0)
         r.who:SetWordWrap(false)
+        r.n2 = Text(r, 12, K.text); r.n2:SetPoint("LEFT", r, "LEFT", 250, 0); r.n2:SetWidth(56)
+        r.n3 = Text(r, 12, K.text); r.n3:SetPoint("LEFT", r, "LEFT", 310, 0); r.n3:SetWidth(56)
         r:SetScript("OnEnter", function(self)
             self.hl:Show()
             local e = self.entry
-            if not e or e.header then return end
+            if e and e.header then
+                if ns.search == "" then Tip.Show(self, "ANCHOR_RIGHT", e.header, e.closed and "Click to expand." or "Click to collapse.") end
+                return
+            end
+            if not e then return end
             if mode == "craft" then
                 Tip.Show(self, "ANCHOR_RIGHT", e.name,
                     ("Owned: %d   Want: %d   Need: %d more\n%s"):format(e.have or 0, DB.target, e.need, e.crafters))
@@ -773,7 +908,7 @@ function ns.InitUI()
                 if e.where and #e.where > 0 then
                     for _, l in ipairs(e.where) do lines[#lines + 1] = ("%s: %d"):format(l[1], l[2]) end
                 else
-                    lines[#lines + 1] = "Location unknown. Press 'Get decor list' again with both accounts on DecorSync 1.4."
+                    lines[#lines + 1] = "Location unknown. Press 'Get decor list' again (the other account needs to send its list again)."
                 end
                 if e.crafters ~= "" then lines[#lines + 1] = "Can craft: " .. e.crafters end
                 Tip.Show(self, "ANCHOR_RIGHT", e.name, table.concat(lines, "\n"))
@@ -782,6 +917,14 @@ function ns.InitUI()
             end
         end)
         r:SetScript("OnLeave", function(self) self.hl:Hide(); Tip.Hide() end)
+        r:SetScript("OnClick", function(self)
+            local e = self.entry
+            if e and e.header then
+                DB.collapsed[e.key] = (not e.closed) or nil
+                if ns.search ~= "" then ns.msg = "Groups stay open while you are searching." end
+                Refresh()
+            end
+        end)
         rows[i] = r
     end
 
@@ -968,7 +1111,7 @@ function ns.InitUI()
         "This account has your crafters.\n\nYou'll see what to craft and what's in stock on the other account, and a button to get the decor list.",
         "This is my crafter account", "crafter")
 
-    f:SetScript("OnShow", Refresh)
+    f:SetScript("OnShow", function() srcAt = 0; Refresh() end)
     local acc = 0
     f:SetScript("OnUpdate", function(self, elapsed)
         acc = acc + elapsed

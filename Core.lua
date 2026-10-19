@@ -1,5 +1,5 @@
 ---------------------------------------------------------------------
--- DecorSync 1.5 - core: talking between accounts, storing data
+-- DecorSync - core: talking between accounts, storing data
 ---------------------------------------------------------------------
 local ADDON_NAME, ns = ...
 local PREFIX = "DECORSYNC"
@@ -232,7 +232,47 @@ local function DecorNameForItem(itemID, miss)
     return nil
 end
 
-local function ScanBagRange(bagIDs, into, miss)
+-- Lumber (housing crafting material, one kind per expansion) --------------
+-- Matched by item NAME so no item IDs are needed. Anything else called "... Lumber"
+-- is picked up too and listed under its own name.
+ns.LUMBER = {
+    { "Ironwood Lumber",     "Classic" },
+    { "Olemba Lumber",       "Burning Crusade" },
+    { "Coldwind Lumber",     "Wrath of the Lich King" },
+    { "Ashwood Lumber",      "Cataclysm" },
+    { "Bamboo Lumber",       "Mists of Pandaria" },
+    { "Shadowmoon Lumber",   "Warlords of Draenor" },
+    { "Fel-Touched Lumber",  "Legion" },
+    { "Darkpine Lumber",     "Battle for Azeroth" },
+    { "Arden Lumber",        "Shadowlands" },
+    { "Dragonpine Lumber",   "Dragonflight" },
+    { "Dornic Fir Lumber",   "The War Within" },
+    { "Thalassian Lumber",   "Midnight" },
+}
+local function LKey(s) return (tostring(s or ""):lower():gsub("[^%w]", "")) end
+local LUMBER_BY_KEY = {}
+for _, l in ipairs(ns.LUMBER) do LUMBER_BY_KEY[LKey(l[1])] = l end
+
+local lumberCache = {}       -- itemID -> canonical lumber name, or false for "not lumber"
+local pendingItems = {}      -- item IDs whose names were requested; the window redraws when they arrive
+local function LumberNameForItem(itemID)
+    local hit = lumberCache[itemID]
+    if hit ~= nil then return hit or nil end
+    local n = C_Item and C_Item.GetItemNameByID and C_Item.GetItemNameByID(itemID)
+    if not n then                                      -- not loaded yet; ask for it and try again later
+        if C_Item and C_Item.RequestLoadItemDataByID then
+            pendingItems[itemID] = true
+            C_Item.RequestLoadItemDataByID(itemID)
+        end
+        return nil
+    end
+    local known = LUMBER_BY_KEY[LKey(n)]
+    local res = known and known[1] or (n:find(" Lumber$") and n) or false
+    lumberCache[itemID] = res
+    return res or nil
+end
+
+local function ScanBagRange(bagIDs, into, miss, lum)
     for _, bag in ipairs(bagIDs) do
         local slots = C_Container.GetContainerNumSlots(bag) or 0
         for slot = 1, slots do
@@ -240,6 +280,10 @@ local function ScanBagRange(bagIDs, into, miss)
             if info and info.itemID then
                 local name = DecorNameForItem(info.itemID, miss)
                 if name then into[name] = (into[name] or 0) + (info.stackCount or 1) end
+                if lum then
+                    local ln = LumberNameForItem(info.itemID)
+                    if ln then lum[ln] = (lum[ln] or 0) + (info.stackCount or 1) end
+                end
             end
         end
     end
@@ -265,26 +309,64 @@ local function CarriedBagIDs()
 end
 
 local function ScanBags()
-    if not (C_HousingCatalog and C_HousingCatalog.GetCatalogEntryInfoByItem and C_Container) then return end
-    local into = {}
-    ScanBagRange(CarriedBagIDs(), into, {})
-    MyInv().bags = into
+    if not C_Container then return end
+    local into, lum = {}, {}
+    ScanBagRange(CarriedBagIDs(), into, {}, lum)
+    local inv = MyInv()
+    if C_HousingCatalog and C_HousingCatalog.GetCatalogEntryInfoByItem then inv.bags = into end
+    inv.lumber = inv.lumber or {}
+    inv.lumber.bags = lum
 end
+
+-- Warband bank access. The warband bank can't be opened by a second game account
+-- at the same time, so when the other account logged in first this one can't see it.
+-- ns.warbandBlocked is true after a bank visit where that happened.
+local function WarbandAccess()
+    local B = Enum and Enum.BankType
+    if C_Bank and C_Bank.CanViewBank and B and B.Account then
+        local ok, can = pcall(C_Bank.CanViewBank, B.Account)
+        if ok then return can and true or false end
+    end
+    local slots = 0
+    for _, id in ipairs(EnumBags("AccountBankTab_", 8)) do
+        slots = slots + (C_Container.GetContainerNumSlots(id) or 0)
+    end
+    return slots > 0
+end
+local warbandWarned = false
 
 local function ScanBank()
     if not bankOpen then return end
-    if not (C_HousingCatalog and C_HousingCatalog.GetCatalogEntryInfoByItem and C_Container) then return end
+    if not C_Container then return end
+    local haveCat = C_HousingCatalog and C_HousingCatalog.GetCatalogEntryInfoByItem
     local miss = {}
-    local mine = {}
-    ScanBagRange(EnumBags("CharacterBankTab_", 8), mine, miss)
+    local mine, mineL = {}, {}
+    ScanBagRange(EnumBags("CharacterBankTab_", 8), mine, miss, mineL)
     local legacy = EnumBags("BankBag_", 7)
     if Enum and Enum.BagIndex and Enum.BagIndex.Bank then table.insert(legacy, 1, Enum.BagIndex.Bank) end
-    ScanBagRange(legacy, mine, miss)
-    MyInv().bank = mine
+    ScanBagRange(legacy, mine, miss, mineL)
+    local inv = MyInv()
+    if haveCat then inv.bank = mine end
+    inv.lumber = inv.lumber or {}
+    inv.lumber.bank = mineL
 
-    local shared = {}
-    ScanBagRange(EnumBags("AccountBankTab_", 8), shared, miss)
-    DB.warband = { items = shared, at = time(), by = MyKey() }
+    if WarbandAccess() then
+        ns.warbandBlocked = false
+        local shared, sharedL = {}, {}
+        ScanBagRange(EnumBags("AccountBankTab_", 8), shared, miss, sharedL)
+        DB.warband = { items = haveCat and shared or (DB.warband and DB.warband.items) or {},
+                       lumber = sharedL, at = time(), by = MyKey() }
+        warbandWarned = false
+    else
+        -- keep the last known warband numbers rather than overwriting them with nothing
+        ns.warbandBlocked = true
+        if not warbandWarned then
+            warbandWarned = true
+            out("WARNING: no access to your Warband Bank on this account right now. This usually happens when your other " ..
+                "account logged in first. Warband bank decor and lumber were NOT updated (last known numbers are kept). " ..
+                "Log out of both, log into this account first, then open the bank again.")
+        end
+    end
 end
 
 local function ScanMail()
@@ -587,6 +669,14 @@ local function AddInventory(owned, locs)
     return added, newNames
 end
 
+-- For the window: everything "Send my decor" would send, with where each piece is
+-- (own scans and TradeSkillMaster merged). Reads only; nothing is scanned or sent.
+function ns.SourceLocs()
+    local owned, locs = {}, {}
+    AddInventory(owned, locs)
+    return locs
+end
+
 ---------------------------------------------------------------------
 -- Sending the list
 ---------------------------------------------------------------------
@@ -816,6 +906,7 @@ function ns.ScanRecipes(silent)
         if ri and ri.learned then
             local ok, od = pcall(C_TradeSkillUI.GetRecipeOutputItemData, rid)
             local ref = ok and type(od) == "table" and (od.itemID or od.hyperlink) or nil
+            local outID = ok and type(od) == "table" and od.itemID or nil
             if not ref then
                 local ok3, link = pcall(C_TradeSkillUI.GetRecipeItemLink, rid)
                 if ok3 then ref = link end
@@ -828,6 +919,20 @@ function ns.ScanRecipes(silent)
                     if not rec[who] then added = added + 1 end
                     rec[who] = profName
                     DB.recipeIDs[decor.name] = rid          -- needed to queue it in CraftSim
+                    local exp = RecipeExpansion(rid, outID)
+                    if exp then DB.expansions[decor.name] = exp end
+                    -- remember what the recipe uses so lumber needs can be worked out
+                    if C_TradeSkillUI.GetRecipeSchematic then
+                        local ok2, sch = pcall(C_TradeSkillUI.GetRecipeSchematic, rid, false)
+                        if ok2 and type(sch) == "table" and sch.reagentSlotSchematics then
+                            local rg = {}
+                            for _, slot in ipairs(sch.reagentSlotSchematics) do
+                                local r1 = slot.reagents and slot.reagents[1]
+                                if r1 and r1.itemID then rg[r1.itemID] = (rg[r1.itemID] or 0) + (slot.quantityRequired or 0) end
+                            end
+                            DB.reagents[decor.name] = rg
+                        end
+                    end
                 end
             end
         end
@@ -840,6 +945,95 @@ end
 -- The "what to craft" list
 ---------------------------------------------------------------------
 ns.search = ""
+
+-- Expansions, oldest first. A recipe's profession info names its expansion
+-- (e.g. "Khaz Algar Tailoring"), so the text is matched against these keywords.
+ns.EXPANSIONS = {
+    { "Classic",             { "classic" } },
+    { "Burning Crusade",     { "outland", "burning crusade" } },
+    { "Wrath of the Lich King", { "northrend", "wrath" } },
+    { "Cataclysm",           { "cataclysm" } },
+    { "Mists of Pandaria",   { "pandaria", "mists" } },
+    { "Warlords of Draenor", { "draenor", "warlords" } },
+    { "Legion",              { "legion" } },
+    { "Battle for Azeroth",  { "kul tiran", "zandalari", "battle for azeroth" } },
+    { "Shadowlands",         { "shadowlands" } },
+    { "Dragonflight",        { "dragon isles", "dragonflight" } },
+    { "The War Within",      { "khaz algar", "war within" } },
+    { "Midnight",            { "midnight" } },
+}
+local EXP_BY_ID = {}      -- item expansionID (0 = Classic ...) -> label
+for i, e in ipairs(ns.EXPANSIONS) do EXP_BY_ID[i - 1] = e[1] end
+local EXP_ORDER = {}
+for i, e in ipairs(ns.EXPANSIONS) do EXP_ORDER[e[1]] = i end
+
+local function ExpFromText(text)
+    text = (text or ""):lower()
+    if text == "" then return nil end
+    for i = #ns.EXPANSIONS, 1, -1 do                -- newest first so "Midnight" beats stray matches
+        for _, kw in ipairs(ns.EXPANSIONS[i][2]) do
+            if text:find(kw, 1, true) then return ns.EXPANSIONS[i][1] end
+        end
+    end
+end
+
+-- sort position of an expansion label (unknown ones go last)
+function ns.ExpOrder(label) return EXP_ORDER[label or ""] or 99 end
+
+-- which expansion a recipe belongs to: profession info first, item's own expansion as backup
+local function RecipeExpansion(rid, itemID)
+    if C_TradeSkillUI and C_TradeSkillUI.GetProfessionInfoByRecipeID then
+        local ok, pi = pcall(C_TradeSkillUI.GetProfessionInfoByRecipeID, rid)
+        if ok and type(pi) == "table" then
+            local lab = ExpFromText((pi.expansionName or "") .. " " .. (pi.professionName or ""))
+            if lab then return lab end
+        end
+    end
+    if itemID and C_Item and C_Item.GetItemInfo then
+        local ok, id = pcall(function() return select(15, C_Item.GetItemInfo(itemID)) end)
+        if ok and id and EXP_BY_ID[id] then return EXP_BY_ID[id] end
+    end
+end
+
+-- Expansion for a decor name, best source first:
+--   1. DecorExpansions.lua (fixed list)   2. the recipe's profession (recorded when a
+--   profession window is opened)   3. the item's own expansion as the game reports it
+-- Source 3 is read for every item in DecorIDs.lua, so nobody has to log into crafters.
+local function NameKey(name) return (tostring(name or ""):lower():gsub("[^%w]", "")) end
+
+function ns.ExpansionOf(name)
+    local k = NameKey(name)
+    return (ns.StaticExpansion and ns.StaticExpansion[k])
+        or (ns.DB.expansions and ns.DB.expansions[name])
+        or (ns.DB.itemExp and ns.DB.itemExp[k])
+end
+
+local function NoteItemExpansion(id)
+    if not (C_Item and C_Item.GetItemInfo) then return false end
+    local ok, name, expID = pcall(function()
+        local info = { C_Item.GetItemInfo(id) }
+        return info[1], info[15]
+    end)
+    if not (ok and name) then return false end
+    local label = expID and EXP_BY_ID[expID]
+    if label then ns.DB.itemExp[NameKey(name)] = label end
+    return true
+end
+
+-- asks the game about every decor item ID; answers arrive through GET_ITEM_INFO_RECEIVED
+function ns.LoadItemExpansions()
+    for _, id in ipairs(ns.DecorIDList or {}) do
+        if not NoteItemExpansion(id) and C_Item and C_Item.RequestLoadItemDataByID then
+            C_Item.RequestLoadItemDataByID(id)
+        end
+    end
+end
+
+local function ByExpThenName(a, b)
+    local oa, ob = ns.ExpOrder(a.exp), ns.ExpOrder(b.exp)
+    if oa ~= ob then return oa < ob end
+    return a.name < b.name
+end
 
 local function CraftersText(crafters)
     local who = {}
@@ -857,10 +1051,19 @@ function ns.GetNeeded()
     for name, crafters in pairs(DB.recipes) do
         local have = r.owned[name] or 0
         if have < DB.target and (not DB.onlyMe or crafters[me]) and (ns.search == "" or name:lower():find(ns.search, 1, true)) then
-            list[#list + 1] = { name = name, have = have, need = DB.target - have, crafters = CraftersText(crafters) }
+            local lum, rg = nil, DB.reagents and DB.reagents[name]
+            if rg then
+                lum = {}
+                for id, q in pairs(rg) do
+                    local ln = LumberNameForItem(id)
+                    if ln then lum[ln] = (lum[ln] or 0) + q * (DB.target - have) end
+                end
+            end
+            list[#list + 1] = { name = name, have = have, need = DB.target - have, crafters = CraftersText(crafters),
+                                exp = ns.ExpansionOf(name), lumber = lum }
         end
     end
-    table.sort(list, function(a, b) return a.name < b.name end)
+    table.sort(list, ByExpThenName)
     return list, "ok"
 end
 
@@ -878,22 +1081,11 @@ function ns.GetStock()
             local wh = r.where and r.where[name]
             local parts = {}
             for _, l in ipairs(wh or {}) do parts[#parts + 1] = ("%s %d"):format(l[1], l[2]) end
-            local prof
-            for _, p in pairs(crafters or {}) do
-                if not prof or p < prof then prof = p end
-            end
             list[#list + 1] = { name = name, have = have, where = wh, whereText = table.concat(parts, ", "),
-                                crafters = CraftersText(crafters), prof = prof }
+                                crafters = CraftersText(crafters), exp = ns.ExpansionOf(name) }
         end
     end
-    table.sort(list, function(a, b)           -- by profession (unknown last), then name
-        if a.prof ~= b.prof then
-            if not a.prof then return false end
-            if not b.prof then return true end
-            return a.prof < b.prof
-        end
-        return a.name < b.name
-    end)
+    table.sort(list, ByExpThenName)
     return list
 end
 
@@ -982,6 +1174,102 @@ function ns.ImportToCraftSim()
         if i < #todo then C_Timer.After(0.05, step) else finish() end
     end
     step()
+end
+
+local EXP_SHORT = {
+    ["Classic"] = "Classic", ["Burning Crusade"] = "TBC", ["Wrath of the Lich King"] = "WotLK",
+    ["Cataclysm"] = "Cata", ["Mists of Pandaria"] = "MoP", ["Warlords of Draenor"] = "WoD",
+    ["Legion"] = "Legion", ["Battle for Azeroth"] = "BfA", ["Shadowlands"] = "SL",
+    ["Dragonflight"] = "DF", ["The War Within"] = "TWW", ["Midnight"] = "Midnight",
+}
+
+local function CurrentProfName()
+    if not ns.profOpen then return nil end
+    local p = C_TradeSkillUI and C_TradeSkillUI.GetBaseProfessionInfo and C_TradeSkillUI.GetBaseProfessionInfo()
+    return p and p.professionName or nil
+end
+
+-- Lumber needed to cover the Want shortfall of recorded decor:
+--   all  = every decor recipe recorded (any crafter)
+--   prof = only decor of the profession window that is open on this character (nil if none open)
+-- Returns nil until a decor list has been received and recipes have been scanned.
+function ns.LumberNeeds()
+    local r = DB.received
+    if not r or not next(DB.reagents) then return nil end
+    local me, pname = MyKey(), CurrentProfName()
+    local all, prof = {}, pname and {} or nil
+    for name, crafters in pairs(DB.recipes) do
+        local have = r.owned[name] or 0
+        local rg = DB.reagents[name]
+        if rg and have < DB.target then
+            local need = DB.target - have
+            for id, q in pairs(rg) do
+                local ln = LumberNameForItem(id)
+                if ln then
+                    all[ln] = (all[ln] or 0) + q * need
+                    if prof and crafters[me] == pname then prof[ln] = (prof[ln] or 0) + q * need end
+                end
+            end
+        end
+    end
+    return all, prof, pname
+end
+
+-- Lumber across this account: every character's bags and bank, plus the warband bank.
+function ns.GetLumber()
+    local per = {}                        -- lumber name -> { total, parts = {...} }
+    local function add(name, label, c)
+        if not c or c <= 0 then return end
+        local e = per[name]
+        if not e then e = { total = 0, parts = {} }; per[name] = e end
+        e.total = e.total + c
+        e.parts[#e.parts + 1] = { label, c }
+    end
+    local chars = {}
+    for key in pairs(DB.inv) do chars[#chars + 1] = key end
+    table.sort(chars)
+    for _, key in ipairs(chars) do
+        local lb = DB.inv[key].lumber
+        if lb then
+            local who = ShortName(key)
+            for name, c in pairs(lb.bags or {}) do add(name, who .. " (bags)", c) end
+            for name, c in pairs(lb.bank or {}) do add(name, who .. " (bank)", c) end
+        end
+    end
+    for name, c in pairs((DB.warband and DB.warband.lumber) or {}) do add(name, "warband bank", c) end
+
+    local names, seen = {}, {}
+    for _, l in ipairs(ns.LUMBER) do names[#names + 1] = l[1]; seen[l[1]] = true end
+    local extra = {}
+    for name in pairs(per) do if not seen[name] then extra[#extra + 1] = name end end
+    table.sort(extra)
+    for _, n in ipairs(extra) do names[#names + 1] = n end
+
+    local list, total, owned = {}, 0, {}
+    local needAll, needProf = ns.LumberNeeds()
+    for _, name in ipairs(names) do
+        local e = per[name]
+        local known = LUMBER_BY_KEY[LKey(name)]
+        local exp = known and known[2]
+        local parts, lines = {}, {}
+        for _, p in ipairs(e and e.parts or {}) do
+            parts[#parts + 1] = ("%s %d"):format(p[1], p[2])
+            lines[#lines + 1] = ("%s: %d"):format(p[1], p[2])
+        end
+        local t = e and e.total or 0
+        if ns.warbandBlocked then lines[#lines + 1] = "Warband bank: no access right now (last known numbers shown)" end
+        list[#list + 1] = {
+            name = exp and (name .. "  |cff7a8394" .. (EXP_SHORT[exp] or exp) .. "|r") or name,
+            total = t,
+            needAll = needAll and (needAll[name] or 0) or nil,
+            needProf = needProf and (needProf[name] or 0) or nil,
+            text = #parts > 0 and table.concat(parts, ", ") or "none recorded",
+            tip = #lines > 0 and table.concat(lines, "\n") or "None recorded on any character yet.",
+        }
+        total = total + t
+        owned[name] = t
+    end
+    return list, total, owned
 end
 
 function ns.Info()
@@ -1268,10 +1556,14 @@ f:SetScript("OnEvent", function(self, event, ...)
         DB.target = DB.target or 1
         DB.recipes = DB.recipes or {}
         DB.recipeIDs = DB.recipeIDs or {}
+        DB.expansions = DB.expansions or {}
+        DB.itemExp = DB.itemExp or {}
+        DB.reagents = DB.reagents or {}
+        DB.collapsed = DB.collapsed or {}
         DB.trusted = DB.trusted or {}
-    DB.inv = DB.inv or {}
-    DB.warband = DB.warband or {}
-    DB.guild = DB.guild or {}
+        DB.inv = DB.inv or {}
+        DB.warband = DB.warband or {}
+        DB.guild = DB.guild or {}
         DB.minimap = DB.minimap or { angle = 215 }
         DB.club = nil                                    -- community mode was dropped
         if (DB.recipesVersion or 0) < 2 then             -- recipes now store the realm too
@@ -1282,6 +1574,7 @@ f:SetScript("OnEvent", function(self, event, ...)
         C_ChatInfo.RegisterAddonMessagePrefix(PREFIX)
         self:RegisterEvent("CHAT_MSG_ADDON")
         self:RegisterEvent("TRADE_SKILL_SHOW")
+        self:RegisterEvent("TRADE_SKILL_CLOSE")
         self:RegisterEvent("TRADE_SKILL_LIST_UPDATE")
         self:RegisterEvent("PLAYER_ENTERING_WORLD")
         -- inventory tracking; pcall so one unknown event name can't break loading
@@ -1291,7 +1584,8 @@ f:SetScript("OnEvent", function(self, event, ...)
                               "PLAYER_INTERACTION_MANAGER_FRAME_SHOW",
                               "PLAYER_INTERACTION_MANAGER_FRAME_HIDE",
                               "GUILDBANKFRAME_OPENED", "GUILDBANKFRAME_CLOSED",
-                              "GUILDBANKBAGSLOTS_CHANGED" }) do
+                              "GUILDBANKBAGSLOTS_CHANGED",
+                              "GET_ITEM_INFO_RECEIVED" }) do
             pcall(self.RegisterEvent, self, ev)
         end
         if ns.InitUI then ns.InitUI() end
@@ -1299,6 +1593,11 @@ f:SetScript("OnEvent", function(self, event, ...)
         OnMessage(...)
     elseif event == "TRADE_SKILL_SHOW" then
         recipePending = true
+        ns.profOpen = true
+        Later("profchg", 2, Changed)
+    elseif event == "TRADE_SKILL_CLOSE" then
+        ns.profOpen = false
+        Changed()
     elseif event == "TRADE_SKILL_LIST_UPDATE" then
         if recipePending and not recipeScheduled then
             recipeScheduled = true
@@ -1313,6 +1612,10 @@ f:SetScript("OnEvent", function(self, event, ...)
     elseif event == "BAG_UPDATE_DELAYED" then
         Later("bags", 1, ScanBags)
         if bankOpen then Later("bank", 1, ScanBank) end
+    elseif event == "GET_ITEM_INFO_RECEIVED" then
+        local id = ...
+        if ns.DecorIDs and ns.DecorIDs[id] and NoteItemExpansion(id) then Later("expchg", 2, Changed) end
+        if pendingItems[id] then pendingItems[id] = nil; Later("lumchg", 1, Changed) end
     elseif event == "MAIL_INBOX_UPDATE" then
         Later("mail", 0.5, ScanMail)
     elseif event == "OWNED_AUCTIONS_UPDATED" then
@@ -1344,8 +1647,9 @@ f:SetScript("OnEvent", function(self, event, ...)
         end
     elseif event == "PLAYER_ENTERING_WORLD" then
         Later("bags", 3, ScanBags)
+        Later("itemexp", 5, ns.LoadItemExpansions)
         local isLogin = ...
-        if isLogin and DB.autoRequest and DB.partner then
+        if isLogin and DB.autoRequest and DB.partner and DB.role ~= "seller" then
             C_Timer.After(15, function() Enqueue(DB.partner, "Q|1") end)
         end
     end
@@ -1378,7 +1682,7 @@ SlashCmdList.DECORSYNC = function(msg)
         if ns.UpdateMinimap then ns.UpdateMinimap() end
         out("Minimap button " .. (DB.minimap.hide and "hidden" or "shown"))
     elseif cmd == "reset" then
-        DB.recipes, DB.recipeIDs = {}, {}
+        DB.recipes, DB.recipeIDs, DB.expansions, DB.reagents = {}, {}, {}, {}
         out("Recipe list cleared.")
     elseif cmd == "dump" then Dump()
     elseif cmd == "find" then Find(arg)
@@ -1391,9 +1695,30 @@ SlashCmdList.DECORSYNC = function(msg)
             out("Guild banks are " .. (DB.includeGuild and "INCLUDED" or "left out") .. ". Use /decorsync guild on|off")
         end
     elseif cmd == "craftsim" then ns.ImportToCraftSim()
+    elseif cmd == "expansions" then
+        local counts, total = {}, 0
+        for _, lab in pairs(DB.itemExp) do counts[lab] = (counts[lab] or 0) + 1; total = total + 1 end
+        print(("  %d decor have an expansion from the game's item data:"):format(total))
+        for _, e in ipairs(ns.EXPANSIONS) do
+            if counts[e[1]] then print(("    %s: %d"):format(e[1], counts[e[1]])) end
+        end
+        if arg:lower() == "list" then
+            local lines = {}
+            for k, lab in pairs(DB.itemExp) do lines[#lines + 1] = ("%s = %s"):format(k, lab) end
+            table.sort(lines)
+            for _, l in ipairs(lines) do print("  " .. l) end
+        else
+            print("  /decorsync expansions list  prints every one (check them; fix wrong ones in DecorExpansions.lua)")
+        end
+    elseif cmd == "lumber" then
+        local list = ns.GetLumber()
+        for _, e in ipairs(list) do
+            if e.total > 0 then print(("  %s x%d  -  %s"):format((e.name:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")), e.total, e.text)) end
+        end
+        if ns.warbandBlocked then print("  (warband bank: no access, last known numbers)") end
     elseif cmd == "tsm" then PrintTSM()
     elseif cmd == "item" then ItemProbe(arg)
     else
-        out("Type /decorsync to open the window. Extras: needed, find <name>, item <id>, inv [clear], tsm, craftsim, guild on|off, debug on|off, minimap, reset, dump")
+        out("Type /decorsync to open the window. Extras: needed, find <name>, item <id>, inv [clear], tsm, expansions [list], lumber, craftsim, guild on|off, debug on|off, minimap, reset, dump")
     end
 end

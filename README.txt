@@ -1,4 +1,4 @@
-DECORSYNC 1.5 - setup
+DECORSYNC - setup
 
 INSTALL
 Copy the "DecorSync" folder into  World of Warcraft\_retail_\Interface\AddOns\
@@ -12,7 +12,7 @@ CHOOSE A ROLE
 The first time you open the window it asks what this account does: SELLER (it owns the decor) or CRAFTER (it has your crafters).
 The window then only shows what that role uses. Switch any time with the Crafter | Seller buttons at the top of the window.
 - Crafter: Get decor list, the "Decor to craft" and "In stock" tabs, search, Want, CraftSim import, and the login request and profession scan in Setup.
-- Seller: Send my decor, a "Tracked stock" tab (what is recorded for each character, the warband bank and guild banks), and the guild bank setting in Setup.
+- Seller: Send my decor, a "Tracked stock" tab (what "Send my decor" will send: each character's bags, bank, mail and auctions including TradeSkillMaster's counts, the warband bank and guild banks), and the guild bank setting in Setup.
 Linking the accounts (Setup tab) is the same for both.
 
 FIRST-TIME SETUP (you only do this once)
@@ -34,7 +34,7 @@ EVERY TIME
 
 The list is saved, so you can check it later without the other account being online.
 
-WHAT COUNTS (changed in 1.4)
+WHAT COUNTS
 Only SELLABLE stock counts: decor sitting in bags, bank, mail, auction listings and the
 warband bank on EVERY character of the owning account. Decor you have learned or placed in a
 house is NOT counted (you can't sell it). The game only lets an addon see the character you are
@@ -42,7 +42,8 @@ logged into, so each character's holdings are remembered as you play. To get a c
   - log into it once (bags are read automatically),
   - open its bank once, open its mailbox once, and open the auction house's Auctions tab once (DecorSync only reads, it never queries the AH itself).
 If TradeSkillMaster is installed on the owning account, its per-character bag/bank/mail/auction
-data is used instead for every character it knows about, so you don't need to visit them.
+data is read too, and for each character and place the HIGHER of its number and DecorSync's own is used,
+so you don't need to visit characters TSM already knows about.
 /decorsync tsm shows what was read from it.
 Then press "Send my decor" (or "Get decor list" on the other account). Hover a row in the
 list to see Owned / Want / Need for that piece.
@@ -65,11 +66,25 @@ amounts instead of adding them twice. It only imports what the character you're 
 per crafter. Recipe IDs are saved when a profession window is opened, so open each profession once after updating.
 This reaches into CraftSim's own code (it has no public API for it), so if a CraftSim update changes things it may stop working.
 
+LUMBER NEEDED (Decor to craft tab)
+Each expansion heading shows lumber owned/needed for everything under it, e.g. 28/32 Dragonpine Lumber (red = short, green = enough).
+It uses each recipe's reagents, which are recorded when a profession window is opened, so open each profession once on each crafter.
+
+LUMBER TAB
+On a crafter it also shows NEED ALL (lumber for everything short of Want) and NEED PROF (just the profession window you have open).
+Shows your housing lumber (one kind per expansion) in every character's bags and bank and in the warband bank, for this account.
+Bags are read at login; open each character's bank once. It is not sent to the other account.
+
+WARBAND BANK WARNING
+Only one game account can use the warband bank at a time. If you see "Warband bank: no access" in the window or a WARNING in chat
+when opening a bank, your other account probably logged in first. Warband numbers are not updated (the last known ones are kept).
+Log out of both, log into this account first, and open the bank again.
+
 IN STOCK TAB
 The "In stock" tab lists every decor you hold to sell (even just 1; the number is amber while it is below your "Want"), and where it is:
-which character's bags / bank / mail / auction listings, or the warband bank. Hover a row for the full breakdown. The In stock tab is grouped by profession (from the recipes you have recorded).
+which character's bags / bank / mail / auction listings, or the warband bank. Hover a row for the full breakdown. The In stock and Decor to craft tabs are grouped by expansion (read from the game's item data at login, so no profession windows are needed; /decorsync expansions shows what it found, and DecorExpansions.lua overrides any that are wrong). Click an expansion heading to collapse or expand it.
 The search box filters both tabs.
-Both accounts must run 1.3, and the owning account has to send the list again before locations show.
+Both accounts must run the same DecorSync version, and the owning account has to send the list again before locations show.
 
 IF SOMETHING GOES WRONG
 - /decorsync debug on     shows what is sent and received

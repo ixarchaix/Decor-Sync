@@ -2,6 +2,105 @@
 
 All notable changes between the supplied builds are recorded here, newest first.
 
+## [0.17.0] - 2026-10-19
+
+### Added
+- The Crafter view's Lumber tab has two new columns: **NEED ALL** (lumber to cover the Want shortfall of every recorded decor recipe, on any crafter) and **NEED PROF** (the same for just the profession window that is open on this character; "-" when none is open, and the hint at the bottom says which profession it means). Each is red while you own less than you need and green once you have enough. Owned still counts bags, bank and the warband bank on this account.
+- The list refreshes when a profession window opens or closes.
+
+### Changed
+- On the Lumber tab the expansion next to each lumber name is shortened (TBC, WotLK, Cata, MoP, WoD, BfA, SL, DF, TWW) so it no longer runs into the next column.
+- The Seller view's Lumber tab is unchanged (no need columns, since sellers don't have the recipes).
+- The `.toc` version is now 0.17.0 (was 0.16.0).
+
+### Notes
+- The need columns show "-" until a decor list has been received and recipe reagents have been recorded (open each profession window once on each crafter).
+
+## [0.16.0] - 2026-10-19
+
+### Added
+- On the "Decor to craft" tab, each expansion's heading now shows the lumber needed to craft everything listed under it, as owned/needed with the lumber's name, for example "28/32 Dragonpine Lumber". It is red while you hold less than you need and green once you have enough. The amount is the lumber for the Want shortfall of every piece in that group (so it follows the Want number, "Only what this character can craft" and the search box). Owned counts everything on this account: every character's bags and bank and the warband bank.
+- Each decor recipe's reagents are now recorded when a profession window is opened, which is how the lumber per piece is known. `/decorsync reset` clears them.
+
+### Notes
+- Recipes recorded by earlier builds have no reagent data, so open each profession window once on each crafter after updating; until then those pieces add nothing to the lumber figure, which can read lower than the real need.
+- Not checked in-game: that the recipe reagent data reports lumber in the form this expects.
+- The `.toc` version is now 0.16.0 (was 0.15.1).
+
+## [0.15.1] - 2026-10-19
+
+### Changed
+- The two stat cards now just show a number: "Decor to craft" and "Decor in stock" (Seller view: "Characters tracked" and "Decor tracked"). The small lines under the numbers are gone, and the stock card now matches the In stock tab's count.
+- The `.toc` version is now 0.15.1 (was 0.15.0).
+
+## [0.15.0] - 2026-10-19
+
+### Added
+- A **Lumber** tab (both Crafter and Seller views) showing how much of each expansion's housing lumber you hold across this account: every character's bags and bank, plus the warband bank. Each row shows the total and where it is; hover for the breakdown. The tab label shows the grand total. `/decorsync lumber` prints the same in chat.
+- Lumber is found by item name (Ironwood, Olemba, Coldwind, Ashwood, Bamboo, Shadowmoon, Fel-Touched, Darkpine, Arden, Dragonpine, Dornic Fir and Thalassian Lumber), so no item IDs are needed. Any other item called "... Lumber" is picked up and listed under its own name. Counts are per account and are not sent to the other account.
+- A warning when this account can't use the Warband Bank, which usually means your other account logged in first. It prints in chat when you open a bank, shows in amber in the window's status line, and flags the Warband bank row in Tracked stock.
+
+### Fixed
+- Opening the bank without warband access no longer wipes the remembered warband bank contents; the last known numbers are kept and marked.
+
+### Changed
+- Bags and bank are now scanned for lumber even where the housing catalog isn't available.
+- The `.toc` version is now 0.15.0 (was 0.14.1).
+
+### Notes
+- Not checked in-game: the exact lumber item names, and whether the game's bank check reports "no access" in the other-account-first situation. If the warning doesn't appear (or appears wrongly), run `/decorsync debug on`, open the bank, and tell me what it says.
+
+## [0.14.1] - 2026-10-19
+
+### Changed
+- Expansions no longer depend on opening profession windows. At login DecorSync asks the game for the expansion of every item in `DecorIDs.lua` and remembers the answers, so both accounts group decor by expansion straight away, including decor no recorded crafter can make.
+- Order of sources for a piece's expansion: the fixed list in the new `DecorExpansions.lua`, then the recipe's profession (when recorded), then the game's item data.
+
+### Added
+- `DecorExpansions.lua`: a fixed list of decor name -> expansion that overrides everything else. It starts empty; add lines to correct anything the game reports wrongly.
+- `/decorsync expansions` shows how many decor were given each expansion from the game's item data, and `/decorsync expansions list` prints every one so they can be checked.
+- The `.toc` loads the new file and the version is now 0.14.1 (was 0.14.0).
+
+### Notes
+- Not checked in-game: whether the game's item data gives a sensible expansion for housing decor. Run `/decorsync expansions` once to see.
+
+## [0.14.0] - 2026-10-19
+
+### Changed
+- The "Decor to craft" and "In stock" tabs are now grouped by expansion, oldest first (Classic, Burning Crusade ... The War Within, Midnight), then by name. Each expansion has a heading row with its count. Click a heading to collapse or expand it; the choice is remembered between sessions and kept separately for each tab.
+- While the search box has text, every group stays open so matches are never hidden.
+- Decor whose expansion isn't known yet is listed last under "Other (expansion not recorded)". This replaces the old grouping of In stock by profession.
+
+### Added
+- The expansion of each decor recipe is recorded when a profession window is opened, taken from the recipe's profession (for example "Khaz Algar Tailoring"), with the item's own expansion as a backup. Recipes recorded in earlier builds have no expansion, so open each profession window once on each crafter after updating.
+- `/decorsync reset` also clears the saved expansions.
+
+### Notes
+- Expansion names are matched by keyword (for example "Dragon Isles" counts as Dragonflight). If a profession reports a name that isn't matched, those pieces land in "Other"; tell me the name and it can be added to the list in `Core.lua`.
+- The `.toc` version is now 0.14.0 (was 0.13.1).
+
+## [0.13.1] - 2026-10-19
+
+### Fixed
+- A seller account with "Ask for a fresh list when I log in" still ticked from before no longer sends a list request at login. The login request now only runs on Crafter accounts.
+- The Tracked-stock tooltip on a row with no location data no longer tells you to run DecorSync 1.4. It says to press "Get decor list" again after the other account sends its list.
+- Removed a duplicated variable declaration in `UI.lua`.
+- Indentation of the saved-data defaults in `Core.lua`.
+
+### Changed
+- `README.txt` no longer has stale version numbers in its headings, and now correctly says TradeSkillMaster's counts are combined with DecorSync's own (the higher number is used) rather than replacing them.
+- The `.toc` version is now 0.13.1 (was 0.13.0).
+
+## [0.13.0] - 2026-10-19
+
+### Changed
+- The Seller view's Tracked stock tab now shows what "Send my decor" would actually send: DecorSync's own records combined with TradeSkillMaster's counts when TSM is installed (the higher number for each item and place). Characters only TSM knows now appear in the list, and places only TSM tracks, such as the reagent bank, are listed after the usual four. Previously the tab showed only DecorSync's own records, so it could read 0 where TSM had stock.
+- The two stat cards and the hint above the list say so, and the hint explains what to do without TSM.
+- The TSM read is refreshed when the tab is opened and at most every few seconds after that.
+- `Core.lua` has a new `ns.SourceLocs()` that hands the combined list to the window. It only reads; nothing is scanned or sent.
+- `README.txt` describes the new Tracked stock contents.
+- The `.toc` version is now 0.13.0 (was 0.12.0).
+
 ## [0.12.0] - 2026-10-19
 
 ### Added
