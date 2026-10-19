@@ -8,10 +8,17 @@ If WoW says it is out of date, tick "Load out of date AddOns" at character selec
 OPEN IT
 Click the minimap button (or the addon menu next to the minimap), or type /decorsync.
 
+CHOOSE A ROLE
+The first time you open the window it asks what this account does: SELLER (it owns the decor) or CRAFTER (it has your crafters).
+The window then only shows what that role uses. Switch any time with the Crafter | Seller buttons at the top of the window.
+- Crafter: Get decor list, the "Decor to craft" and "In stock" tabs, search, Want, CraftSim import, and the login request and profession scan in Setup.
+- Seller: Send my decor, a "Tracked stock" tab (what is recorded for each character, the warband bank and guild banks), and the guild bank setting in Setup.
+Linking the accounts (Setup tab) is the same for both.
+
 FIRST-TIME SETUP (you only do this once)
 1. Log into a character on each account, at the same time.
-2. On either account, type the OTHER account's character into the top box
-   (Name-Realm, for example Alice-Frostmourne) and press Connect.
+2. On either account, open the Setup tab (the window opens on it until you are linked) and type
+   the OTHER account's character into the box (Name-Realm, for example Alice-Frostmourne) and press Connect.
 3. On the other account a pop-up asks "Is that a character on your other account?" - press Yes.
    You should see "Connected!". That's the link done. A crafter you log in with later
    will ask the same question once.
@@ -45,7 +52,7 @@ DecorIDs.lua (item IDs) and DecorNames.lua (decor names) hold what counts. An it
 Bags, bank, mail, auctions, the warband bank and TSM data are filtered through them. To add more, append to either list. "/decorsync item <id>" and "/decorsync find <name>" show whether something is in the database.
 
 GUILD BANKS (setting, off by default)
-In the window's SETTINGS section, tick "Include guild banks in my stock" (or type /decorsync guild on|off) on the
+In the Seller view's Setup tab, tick "Include guild banks in my stock" (or type /decorsync guild on|off) on the
 account that owns the decor. When it is ticked, decor in the guild bank tabs you can view is counted, once per guild.
 Open each guild bank once and wait a few seconds while its tabs are read; it is then remembered. If TradeSkillMaster
 tracks the guild bank, its numbers are used too (the higher of the two). Press "Send my decor" again after changing the setting.

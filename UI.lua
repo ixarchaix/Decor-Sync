@@ -1,7 +1,7 @@
 ---------------------------------------------------------------------
--- DecorSync 1.5 - the window, the minimap button
+-- DecorSync - the window, the minimap button
 -- Skinned to match Regional Edge: flat dark navy panels, 1px borders,
--- stat cards, underlined tab, lime row bars, slim scrollbar.
+-- stat cards, underlined tabs, lime row bars, slim scrollbar.
 ---------------------------------------------------------------------
 local ADDON_NAME, ns = ...
 
@@ -25,12 +25,15 @@ local K = {
     amber    = { 1.00, 0.72, 0.26, 1 },
 }
 
-local WIDTH, HEIGHT = 620, 704
-local ROWS, ROW_H = 10, 26
-local f, statusFS, partnerBox, targetFS, onlyMeCB, autoCB, guildCB, stat1, stat2, listFrame, sb, emptyFS
-local craftTab, stockTab, h2, h3, searchBox
-local mode, needed, stock = "craft", {}, {}
+local WIDTH, HEIGHT = 620, 590
+local ROWS, ROW_H = 11, 26
+local f                          -- the main window
+local W = {}                     -- every other widget, so nothing runs into Lua's upvalue limit
+local mode, needed, stock, tracked = "craft", {}, {}, {}
+local trackedChars, trackedTotal = 0, 0
 local rows, list, listState = {}, {}, "nolist"
+local offset, updating = 0, false
+
 local offset, updating = 0, false
 
 ---------------------------------------------------------------------
@@ -147,9 +150,9 @@ local function CheckBox(parent, label, onclick)
     return b
 end
 
-local function StatCard(parent, label)
+local function StatCard(parent, label, h)
     local c = Box(parent, K.card, K.border)
-    c:SetHeight(64)
+    c:SetHeight(h or 64)
     c.label = Text(c, 10, K.dim)
     c.label:SetPoint("TOPLEFT", 12, -9)
     c.label:SetText(label)
@@ -160,6 +163,29 @@ local function StatCard(parent, label)
     c.sub:SetPoint("RIGHT", c, "RIGHT", -12, 0)
     c.sub:SetWordWrap(false)
     return c
+end
+
+-- one half of the Crafter | Seller switch
+local function Segment(parent, label, w, onclick)
+    local b = Box(parent, K.card, K.border, "Button")
+    b:SetSize(w, 24)
+    b.text = Text(b, 12, K.dim, "CENTER")
+    b.text:SetPoint("CENTER")
+    b.text:SetText(label)
+    function b:SetActive(on)
+        self.active = on and true or false
+        self:SetBackdropColor(unpack(self.active and K.accentBg or K.card))
+        self:SetBackdropBorderColor(unpack(self.active and K.accent or K.border))
+        self.text:SetTextColor(unpack(self.active and K.text or K.dim))
+    end
+    b:SetScript("OnEnter", function(self) if not self.active then self:SetBackdropColor(unpack(K.cardHi)) end end)
+    b:SetScript("OnLeave", function(self) self:SetActive(self.active) end)
+    b:SetScript("OnClick", onclick)
+    return b
+end
+
+local function ShowAll(group, on)
+    for _, w in ipairs(group) do w:SetShown(on) end
 end
 
 ---------------------------------------------------------------------
@@ -179,6 +205,60 @@ local function Grouped(items)
         res[#res + 1] = e
     end
     return res
+end
+
+-- Seller view: what DecorSync has recorded on this account (characters,
+-- warband bank, guild banks). Read straight from the saved data.
+local SECT = { { "bags", "bags" }, { "bank", "bank" }, { "mail", "mail" }, { "ah", "auctions" } }
+local function Tracked()
+    local DB = ns.DB
+    local res, total = {}, 0
+    local keys = {}
+    for key in pairs(DB.inv or {}) do keys[#keys + 1] = key end
+    table.sort(keys)
+    for _, key in ipairs(keys) do
+        local inv = DB.inv[key]
+        local n, sum, parts = {}, 0, {}
+        for _, s in ipairs(SECT) do
+            local c = 0
+            for _, v in pairs(inv[s[1]] or {}) do c = c + v end
+            n[s[1]] = c
+            sum = sum + c
+            parts[#parts + 1] = ("%s %d"):format(s[2], c)
+        end
+        res[#res + 1] = {
+            name = key, total = sum, text = table.concat(parts, ", "),
+            tip = ("Bags: %d\nBank: %d\nMail: %d\nAuctions: %d\nUpdated %s"):format(
+                n.bags, n.bank, n.mail, n.ah, inv.at and ns.timeAgo(inv.at) or "never"),
+        }
+        total = total + sum
+    end
+    local wb = DB.warband
+    if wb and wb.items then
+        local c = 0
+        for _, v in pairs(wb.items) do c = c + v end
+        res[#res + 1] = {
+            name = "Warband bank", total = c, text = "updated " .. ns.timeAgo(wb.at),
+            tip = ("%d decor recorded\nUpdated %s"):format(c, ns.timeAgo(wb.at)),
+        }
+        total = total + c
+    end
+    local gnames = {}
+    for g in pairs(DB.guild or {}) do gnames[#gnames + 1] = g end
+    table.sort(gnames)
+    for _, g in ipairs(gnames) do
+        local c = 0
+        for _, items in pairs(DB.guild[g].tabs or {}) do
+            for _, v in pairs(items) do c = c + v end
+        end
+        res[#res + 1] = {
+            name = "Guild bank: " .. g, total = c,
+            text = DB.includeGuild and "counted" or "not counted (guild banks are off in Setup)",
+            tip = ("%d decor recorded\n%s"):format(c, DB.includeGuild and "Counted in your stock." or "Not counted: 'Include guild banks' is off."),
+        }
+        if DB.includeGuild then total = total + c end
+    end
+    return res, #keys, total
 end
 
 local function DrawRows()
@@ -201,10 +281,15 @@ local function DrawRows()
                 r.need:SetText("x" .. e.need)
                 r.who:SetText(e.crafters)
                 r.bar:SetColorTexture(unpack(K.lime))
-            else
+            elseif mode == "stock" then
                 r.need:SetTextColor(unpack(e.have >= ns.DB.target and K.lime or K.amber))
                 r.need:SetText(tostring(e.have))
                 r.who:SetText(e.whereText ~= "" and e.whereText or "location unknown")
+                r.bar:SetColorTexture(unpack(K.accent))
+            else
+                r.need:SetTextColor(unpack(K.text))
+                r.need:SetText(tostring(e.total))
+                r.who:SetText(e.text)
                 r.bar:SetColorTexture(unpack(K.accent))
             end
             r:Show()
@@ -220,72 +305,159 @@ local function RefreshStatus()
     local text = ns.msg or ""
     local prog = ns.Progress()
     if prog then text = text .. "   |cffffb842" .. prog .. "|r" end
-    statusFS:SetText(text)
+    W.statusFS:SetText(text)
 
+    if ns.DB.role == "seller" then
+        W.stat1.label:SetText("CHARACTERS TRACKED")
+        W.stat1.value:SetText(tostring(trackedChars))
+        W.stat1.sub:SetText("bags, bank, mail and auctions remembered")
+        W.stat2.label:SetText("DECOR TRACKED")
+        W.stat2.value:SetText(tostring(trackedTotal))
+        W.stat2.sub:SetText("remembered by DecorSync on this account")
+        return
+    end
+
+    W.stat1.label:SetText("DECOR TO CRAFT")
+    W.stat2.label:SetText("SELLABLE STOCK (OTHER ACCOUNT)")
     local nrec, rec = ns.Info()
-    stat1.value:SetText(tostring(#needed))
-    if listState == "ok" then
-        stat1.sub:SetText(("%d craftable decor recorded"):format(nrec))
-    elseif listState == "norecipes" then
-        stat1.sub:SetText("Open each profession window on each crafter")
+    W.stat1.value:SetText(tostring(#needed))
+    if listState == "norecipes" then
+        W.stat1.sub:SetText("Open each profession window on each crafter")
     else
-        stat1.sub:SetText(("%d craftable decor recorded"):format(nrec))
+        W.stat1.sub:SetText(("%d craftable decor recorded"):format(nrec))
     end
     if rec then
-        stat2.value:SetText(tostring(rec.count or 0))
-        stat2.sub:SetText(("from %s, %s"):format(tostring(rec.from), ns.timeAgo(rec.at)))
+        W.stat2.value:SetText(tostring(rec.count or 0))
+        W.stat2.sub:SetText(("from %s, %s"):format(tostring(rec.from), ns.timeAgo(rec.at)))
     else
-        stat2.value:SetText("-")
-        stat2.sub:SetText("No decor list received yet")
+        W.stat2.value:SetText("-")
+        W.stat2.sub:SetText("No decor list received yet")
     end
 end
 
 local function Refresh()
     if not f or not f:IsShown() then return end
     local DB = ns.DB
-    local l, state = ns.GetNeeded()
-    needed, listState = l or {}, state
-    stock = ns.GetStock()
-    list = (mode == "craft") and needed or Grouped(stock)
+    local seller = DB.role == "seller"
 
-    craftTab.text:SetTextColor(unpack(mode == "craft" and K.text or K.dim))
-    craftTab.underline:SetShown(mode == "craft")
-    stockTab.text:SetTextColor(unpack(mode == "stock" and K.text or K.dim))
-    stockTab.underline:SetShown(mode == "stock")
-    craftTab.text:SetText(("Decor to craft  %d"):format(#needed))
-    stockTab.text:SetText(("In stock  %d"):format(#stock))
-    h2:SetText(mode == "craft" and "NEED" or "OWNED")
-    h3:SetText(mode == "craft" and "WHO CAN CRAFT IT" or "WHERE IT IS")
+    -- keep the current tab valid for the role
+    if seller and (mode == "craft" or mode == "stock") then mode, offset = "tracked", 0 end
+    if not seller and mode == "tracked" then mode, offset = "craft", 0 end
+    local setup = mode == "setup"
+
+    local state
+    if seller then
+        needed, stock, listState = {}, {}, "ok"
+        tracked, trackedChars, trackedTotal = Tracked()
+    else
+        local l
+        l, state = ns.GetNeeded()
+        needed, listState = l or {}, state
+        stock = ns.GetStock()
+        tracked, trackedChars, trackedTotal = {}, 0, 0
+    end
+    if mode == "craft" then list = needed
+    elseif mode == "stock" then list = Grouped(stock)
+    elseif mode == "tracked" then list = tracked
+    else list = {} end
+
+    -- first run: ask which kind of account this is
+    W.chooser:SetShown(DB.role == nil)
+    ShowAll({ W.roleCrafter, W.roleSeller }, DB.role ~= nil)
+    W.roleCrafter:SetActive(DB.role == "crafter")
+    W.roleSeller:SetActive(DB.role == "seller")
+
+    -- connection pill (top right, click it to open Setup)
+    if DB.partner then
+        W.pill.dot:SetColorTexture(unpack(K.lime))
+        W.pill.text:SetTextColor(unpack(K.dim))
+        W.pill.text:SetText("Linked: " .. DB.partner)
+    else
+        W.pill.dot:SetColorTexture(unpack(K.amber))
+        W.pill.text:SetTextColor(unpack(K.amber))
+        W.pill.text:SetText("Not linked")
+    end
+
+    -- the one action this role uses
+    W.getBtn:SetShown(not seller)
+    W.sendBtn:SetShown(seller)
+
+    -- tabs
+    W.craftTab:SetShown(not seller)
+    W.stockTab:SetShown(not seller)
+    W.trackTab:SetShown(seller)
+    for _, t in ipairs({ { W.craftTab, "craft" }, { W.stockTab, "stock" }, { W.trackTab, "tracked" }, { W.setupTab, "setup" } }) do
+        t[1].text:SetTextColor(unpack(mode == t[2] and K.text or K.dim))
+        t[1].underline:SetShown(mode == t[2])
+    end
+    W.craftTab.text:SetText(("Decor to craft  %d"):format(#needed))
+    W.stockTab.text:SetText(("In stock  %d"):format(#stock))
+    W.trackTab.text:SetText(("Tracked stock  %d"):format(#tracked))
+    W.setupTab.text:SetText("Setup")
+
+    -- which parts of the window show
+    ShowAll(W.listGroup, not setup)
+    ShowAll(W.toolbar, not setup and not seller)
+    W.sellHelp:SetShown(not setup and seller)
+    W.setupPanel:SetShown(setup)
+    W.csBtn:SetShown(mode == "craft")
+    ShowAll(W.guildGroup, seller)
+    ShowAll(W.autoGroup, not seller)
+    W.tools:SetShown(not seller)
+
+    if mode == "craft" then
+        W.h1:SetText("DECOR"); W.h2:SetText("NEED"); W.h3:SetText("WHO CAN CRAFT IT")
+        W.footHint:SetText("Hover a row to see owned / want / need.")
+    elseif mode == "stock" then
+        W.h1:SetText("DECOR"); W.h2:SetText("OWNED"); W.h3:SetText("WHERE IT IS")
+        W.footHint:SetText("Hover a row to see where each piece is.")
+    else
+        W.h1:SetText("SOURCE"); W.h2:SetText("ITEMS"); W.h3:SetText("BREAKDOWN")
+        W.footHint:SetText("Hover a row for details. 'Send my decor' sends this to your crafting account.")
+    end
 
     local maxOff = math.max(0, #list - ROWS)
     if offset > maxOff then offset = maxOff end
     updating = true
-    sb:SetMinMaxValues(0, maxOff)
-    sb:SetValue(offset)
+    W.sb:SetMinMaxValues(0, maxOff)
+    W.sb:SetValue(offset)
     updating = false
-    sb:SetShown(maxOff > 0)
+    W.sb:SetShown(maxOff > 0)
 
     DrawRows()
 
-    if state == "nolist" then
-        emptyFS:SetText("No decor list yet.\nPress 'Get decor list' (or 'Send my decor' from the account that owns it).")
-    elseif #list > 0 then
-        emptyFS:SetText("")
+    W.emptyBtn:Hide()
+    if #list > 0 then
+        W.emptyFS:SetText("")
+    elseif mode == "tracked" then
+        W.emptyFS:SetText("Nothing recorded yet.\nLog into each character that holds decor, then open its bank, mailbox and the auction house's Auctions tab once.")
+    elseif not DB.partner then
+        W.emptyFS:SetText("Not linked to your other account yet.")
+        W.emptyBtn:Show()
+    elseif state == "nolist" then
+        W.emptyFS:SetText("No decor list yet.\nPress 'Get decor list' above (the other account can also press 'Send my decor').")
     elseif ns.search ~= "" then
-        emptyFS:SetText("Nothing matches that search.")
+        W.emptyFS:SetText("Nothing matches that search.")
     elseif mode == "stock" then
-        emptyFS:SetText("No sellable decor found yet.")
+        W.emptyFS:SetText("No sellable decor found yet.")
     elseif state == "norecipes" then
-        emptyFS:SetText("No crafting recipes recorded yet.\nLog into each crafter and open each profession window once.")
+        W.emptyFS:SetText("No crafting recipes recorded yet.\nLog into each crafter and open each profession window once.")
     else
-        emptyFS:SetText("Nothing needed. You're stocked!")
+        W.emptyFS:SetText("Nothing needed. You're stocked!")
     end
 
-    targetFS:SetText(tostring(DB.target))
-    onlyMeCB:SetChecked(DB.onlyMe)
-    autoCB:SetChecked(DB.autoRequest)
-    guildCB:SetChecked(DB.includeGuild)
-    if not partnerBox:HasFocus() then partnerBox:SetText(DB.partner or "") end
+    W.targetFS:SetText(tostring(DB.target))
+    W.onlyMeCB:SetChecked(DB.onlyMe)
+    W.autoCB:SetChecked(DB.autoRequest)
+    W.guildCB:SetChecked(DB.includeGuild)
+    if DB.partner then
+        W.linkFS:SetTextColor(unpack(K.lime))
+        W.linkFS:SetText("Linked to " .. DB.partner)
+    else
+        W.linkFS:SetTextColor(unpack(K.amber))
+        W.linkFS:SetText("Not linked yet")
+    end
+    if not W.partnerBox:HasFocus() then W.partnerBox:SetText(DB.partner or "") end
     RefreshStatus()
 end
 
@@ -350,6 +522,15 @@ end
 function ns.InitUI()
     local DB = ns.DB
 
+    -- the first status line used to point at a box that now lives in Setup
+    if ns.msg and ns.msg:find("^Ready%. Type your") then
+        ns.msg = DB.partner and "Ready." or "Not linked yet. Open the Setup tab to link your other account."
+    end
+
+    -- opening tab: the role's own list, or Setup until the accounts are linked
+    mode = (DB.role == "seller") and "tracked" or "craft"
+    if DB.role and not DB.partner then mode = "setup" end
+
     f = Box(UIParent, K.window, K.border, "Frame", "DecorSyncFrame")
     f:SetSize(WIDTH, HEIGHT)
     f:SetPoint("CENTER")
@@ -362,6 +543,33 @@ function ns.InitUI()
     f:SetScript("OnDragStop", f.StopMovingOrSizing)
     f:Hide()
     tinsert(UISpecialFrames, "DecorSyncFrame")
+
+    local function GoTo(key)
+        mode, offset = key, 0
+        Refresh()
+    end
+
+    -- Crafter or Seller. First choice (or switching later) lands on that role's list.
+    local function SetRole(r)
+        local first = DB.role == nil
+        DB.role = r
+        offset = 0
+        if first or mode ~= "setup" then mode = (r == "seller") and "tracked" or "craft" end
+        if not DB.partner then mode = "setup" end
+        Refresh()
+    end
+
+    -- a button that needs a linked account sends you to Setup instead of failing
+    local function NeedsLink(fn)
+        return function()
+            if not DB.partner then
+                ns.msg = "Link your other account first."
+                GoTo("setup")
+                return
+            end
+            fn()
+        end
+    end
 
     -- title bar -------------------------------------------------------
     local title = Text(f, 20, K.text)
@@ -378,70 +586,59 @@ function ns.InitUI()
     close:SetScript("OnLeave", function(self) self.text:SetTextColor(unpack(K.dim)) end)
     close:SetScript("OnClick", function() f:Hide() end)
 
+    -- Crafter | Seller switch
+    W.roleCrafter = Segment(f, "Crafter", 86, function() SetRole("crafter") end)
+    W.roleCrafter:SetPoint("TOPLEFT", 142, -7)
+    W.roleSeller = Segment(f, "Seller", 86, function() SetRole("seller") end)
+    W.roleSeller:SetPoint("LEFT", W.roleCrafter, "RIGHT", -1, 0)
+    Tooltip(W.roleCrafter, "Crafter view", "This account has your crafters: get the decor list and see what to craft.")
+    Tooltip(W.roleSeller, "Seller view", "This account owns the decor: see what is recorded and send it to your crafting account.")
+
+    -- connection pill: always shows whether you're linked, click for Setup
+    W.pill = CreateFrame("Button", nil, f)
+    W.pill:SetSize(200, 24)
+    W.pill:SetPoint("TOPRIGHT", -40, -7)
+    W.pill.text = Text(W.pill, 11, K.dim, "RIGHT")
+    W.pill.text:SetPoint("RIGHT", W.pill, "RIGHT", 0, 0)
+    W.pill.dot = W.pill:CreateTexture(nil, "OVERLAY")
+    W.pill.dot:SetSize(7, 7)
+    W.pill.dot:SetPoint("RIGHT", W.pill.text, "LEFT", -6, 0)
+    W.pill:SetScript("OnClick", function() GoTo("setup") end)
+    Tooltip(W.pill, "Connection", "Click to open Setup.")
+
     local tline = f:CreateTexture(nil, "ARTWORK")
     tline:SetColorTexture(unpack(K.border))
     tline:SetHeight(1)
     tline:SetPoint("TOPLEFT", 1, -37)
     tline:SetPoint("TOPRIGHT", -1, -37)
 
-    -- connection card ---------------------------------------------------
-    local card = Box(f, K.card, K.border)
-    card:SetPoint("TOPLEFT", 14, -50)
-    card:SetPoint("TOPRIGHT", -14, -50)
-    card:SetHeight(122)
+    -- the one action each role presses every time -------------------------
+    W.getBtn = Button(f, "Get decor list", 150, 28, true, NeedsLink(function() ns.Request() end))
+    W.getBtn:SetPoint("TOPLEFT", 14, -48)
+    Tooltip(W.getBtn, "Get decor list", "Asks the other account to send what decor it owns.")
+    W.sendBtn = Button(f, "Send my decor", 150, 28, true, NeedsLink(function() ns.Send() end))
+    W.sendBtn:SetPoint("TOPLEFT", 14, -48)
+    Tooltip(W.sendBtn, "Send my decor", "Sends your decor list to the other account.")
 
-    local cl = Text(card, 10, K.dim)
-    cl:SetPoint("TOPLEFT", 12, -10)
-    cl:SetText("YOUR OTHER ACCOUNT'S CHARACTER  (NAME-REALM, E.G. ALICE-FROSTMOURNE)")
+    W.statusFS = Text(f, 11, K.dim)
+    W.statusFS:SetPoint("TOPLEFT", 178, -48)
+    W.statusFS:SetPoint("RIGHT", f, "RIGHT", -14, 0)
+    W.statusFS:SetHeight(28)
+    W.statusFS:SetJustifyV("MIDDLE")
 
-    local pbox = Box(card, K.input, K.border)
-    pbox:SetSize(330, 26)
-    pbox:SetPoint("TOPLEFT", 12, -26)
-    partnerBox = CreateFrame("EditBox", nil, pbox)
-    SetFont(partnerBox, 13)
-    partnerBox:SetPoint("TOPLEFT", 8, -1)
-    partnerBox:SetPoint("BOTTOMRIGHT", -8, 1)
-    partnerBox:SetAutoFocus(false)
-    partnerBox:SetMaxLetters(64)
-    partnerBox:SetTextColor(unpack(K.text))
-    local function DoConnect()
-        if ns.SetPartner(partnerBox:GetText()) then ns.Ping() end
-        partnerBox:ClearFocus()
-    end
-    partnerBox:SetScript("OnEnterPressed", DoConnect)
-    partnerBox:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
-    partnerBox:SetScript("OnEditFocusGained", function() pbox:SetBackdropBorderColor(unpack(K.accent)) end)
-    partnerBox:SetScript("OnEditFocusLost", function() pbox:SetBackdropBorderColor(unpack(K.border)) end)
+    -- stat cards (their labels follow the role) ---------------------------
+    W.stat1 = StatCard(f, "DECOR TO CRAFT")
+    W.stat1:SetPoint("TOPLEFT", 14, -88)
+    W.stat1:SetWidth((WIDTH - 28 - 8) / 2)
+    W.stat2 = StatCard(f, "SELLABLE STOCK (OTHER ACCOUNT)")
+    W.stat2:SetPoint("TOPRIGHT", -14, -88)
+    W.stat2:SetWidth((WIDTH - 28 - 8) / 2)
 
-    local connect = Button(card, "Connect", 90, 26, true, DoConnect)
-    connect:SetPoint("LEFT", pbox, "RIGHT", 8, 0)
-    Tooltip(connect, "Connect", "Saves the name and sends a test message. The other account needs to be logged in with DecorSync installed. It will ask you to confirm the first time.")
-
-    local get = Button(card, "Get decor list", 150, 26, false, function() ns.Request() end)
-    get:SetPoint("TOPLEFT", 12, -62)
-    Tooltip(get, "Get decor list", "Use this on the account with your CRAFTERS. Asks the other account to send what decor it owns.")
-    local send = Button(card, "Send my decor", 150, 26, false, function() ns.Send() end)
-    send:SetPoint("LEFT", get, "RIGHT", 8, 0)
-    Tooltip(send, "Send my decor", "Use this on the account that OWNS the decor. Sends your decor list to the other account.")
-
-    statusFS = Text(card, 11, K.dim)
-    statusFS:SetPoint("TOPLEFT", 12, -96)
-    statusFS:SetSize(WIDTH - 28 - 24, 20)
-    statusFS:SetJustifyV("TOP")
-
-    -- stat cards ---------------------------------------------------------
-    stat1 = StatCard(f, "DECOR TO CRAFT")
-    stat1:SetPoint("TOPLEFT", 14, -182)
-    stat1:SetWidth((WIDTH - 28 - 8) / 2)
-    stat2 = StatCard(f, "SELLABLE STOCK (OTHER ACCOUNT)")
-    stat2:SetPoint("TOPRIGHT", -14, -182)
-    stat2:SetWidth((WIDTH - 28 - 8) / 2)
-
-    -- tabs + controls ----------------------------------------------------
-    local function MakeTab(x, w, key)
+    -- tabs ---------------------------------------------------------------
+    local function MakeTab(point, x, w, key)
         local t = CreateFrame("Button", nil, f)
         t:SetSize(w, 26)
-        t:SetPoint("TOPLEFT", x, -258)
+        t:SetPoint(point, x, -162)
         t.text = Text(t, 12, K.dim, "CENTER")
         t.text:SetPoint("CENTER")
         t.underline = t:CreateTexture(nil, "OVERLAY")
@@ -449,31 +646,28 @@ function ns.InitUI()
         t.underline:SetHeight(2)
         t.underline:SetPoint("BOTTOMLEFT")
         t.underline:SetPoint("BOTTOMRIGHT")
-        t:SetScript("OnClick", function()
-            mode, offset = key, 0
-            Refresh()
-        end)
+        t:SetScript("OnClick", function() GoTo(key) end)
+        t:SetScript("OnEnter", function(self) self.text:SetTextColor(unpack(K.text)) end)
+        t:SetScript("OnLeave", function(self) self.text:SetTextColor(unpack(mode == key and K.text or K.dim)) end)
         return t
     end
-    craftTab = MakeTab(14, 150, "craft")
-    stockTab = MakeTab(164, 130, "stock")
+    W.craftTab = MakeTab("TOPLEFT", 14, 150, "craft")
+    W.stockTab = MakeTab("TOPLEFT", 164, 130, "stock")
+    W.trackTab = MakeTab("TOPLEFT", 14, 150, "tracked")
+    W.setupTab = MakeTab("TOPRIGHT", -14, 80, "setup")
     local tabLine = f:CreateTexture(nil, "ARTWORK")
     tabLine:SetColorTexture(unpack(K.border))
     tabLine:SetHeight(1)
-    tabLine:SetPoint("TOPLEFT", 14, -284)
-    tabLine:SetPoint("TOPRIGHT", -14, -284)
+    tabLine:SetPoint("TOPLEFT", 14, -188)
+    tabLine:SetPoint("TOPRIGHT", -14, -188)
 
-    -- filter row: only-me checkbox on the left, search on the right
-    onlyMeCB = CheckBox(f, "Only what this character can craft", function(v)
-        DB.onlyMe = v
-        Refresh()
-    end)
-    onlyMeCB:SetPoint("TOPLEFT", 14, -296)
-
+    ---------------------------------------------------------------------
+    -- Lists: filter row (Crafter), column headers, rows, footer
+    ---------------------------------------------------------------------
     local sbox = Box(f, K.input, K.border)
     sbox:SetSize(190, 22)
-    sbox:SetPoint("TOPRIGHT", -14, -293)
-    searchBox = CreateFrame("EditBox", nil, sbox)
+    sbox:SetPoint("TOPLEFT", 14, -198)
+    local searchBox = CreateFrame("EditBox", nil, sbox)
     SetFont(searchBox, 12)
     searchBox:SetPoint("TOPLEFT", 8, -1)
     searchBox:SetPoint("BOTTOMRIGHT", -8, 1)
@@ -495,33 +689,47 @@ function ns.InitUI()
     sl:SetText("Search...")
     searchBox:HookScript("OnTextChanged", function(self) sl:SetShown(self:GetText() == "") end)
 
+    W.onlyMeCB = CheckBox(f, "Only what this character can craft", function(v)
+        DB.onlyMe = v
+        Refresh()
+    end)
+    W.onlyMeCB:SetPoint("LEFT", sbox, "RIGHT", 14, 0)
+
     local plus = Button(f, "+", 24, 22, false, function()
         DB.target = math.min(99, DB.target + 1)
         Refresh()
     end)
-    plus:SetPoint("TOPRIGHT", -14, -260)
+    plus:SetPoint("TOPRIGHT", -14, -198)
     Tooltip(plus, "Want", "How many of each decor you want in stock to sell.")
-    targetFS = Text(f, 13, K.text, "CENTER")
-    targetFS:SetWidth(30)
-    targetFS:SetPoint("RIGHT", plus, "LEFT", -2, 0)
+    W.targetFS = Text(f, 13, K.text, "CENTER")
+    W.targetFS:SetWidth(30)
+    W.targetFS:SetPoint("RIGHT", plus, "LEFT", -2, 0)
     local minus = Button(f, "-", 24, 22, false, function()
         DB.target = math.max(1, DB.target - 1)
         Refresh()
     end)
-    minus:SetPoint("RIGHT", targetFS, "LEFT", -2, 0)
+    minus:SetPoint("RIGHT", W.targetFS, "LEFT", -2, 0)
     local wl = Text(f, 10, K.dim, "RIGHT")
     wl:SetPoint("RIGHT", minus, "LEFT", -8, 0)
     wl:SetText("WANT")
+    W.toolbar = { sbox, W.onlyMeCB, plus, W.targetFS, minus, wl }
+
+    -- Seller: a line of guidance where the Crafter's filter row sits
+    W.sellHelp = Text(f, 11, K.faint)
+    W.sellHelp:SetPoint("TOPLEFT", 14, -197)
+    W.sellHelp:SetWidth(WIDTH - 28)
+    W.sellHelp:SetJustifyV("TOP")
+    W.sellHelp:SetText("What DecorSync has recorded on this account. Log into each character that holds decor, then open its bank, mailbox and the auction house's Auctions tab once.")
 
     -- column headers ------------------------------------------------------
-    local h1 = Text(f, 10, K.dim); h1:SetPoint("TOPLEFT", 26, -324); h1:SetText("DECOR")
-    h2 = Text(f, 10, K.dim); h2:SetPoint("TOPLEFT", 252, -324); h2:SetText("NEED")
-    h3 = Text(f, 10, K.dim); h3:SetPoint("TOPLEFT", 304, -324); h3:SetText("WHO CAN CRAFT IT")
+    W.h1 = Text(f, 10, K.dim); W.h1:SetPoint("TOPLEFT", 26, -232)
+    W.h2 = Text(f, 10, K.dim); W.h2:SetPoint("TOPLEFT", 252, -232)
+    W.h3 = Text(f, 10, K.dim); W.h3:SetPoint("TOPLEFT", 304, -232)
 
     -- list ----------------------------------------------------------------
-    listFrame = CreateFrame("Frame", nil, f)
-    listFrame:SetPoint("TOPLEFT", 14, -340)
-    listFrame:SetPoint("TOPRIGHT", -14, -340)
+    local listFrame = CreateFrame("Frame", nil, f)
+    listFrame:SetPoint("TOPLEFT", 14, -248)
+    listFrame:SetPoint("TOPRIGHT", -14, -248)
     listFrame:SetHeight(ROWS * ROW_H)
     listFrame:EnableMouseWheel(true)
 
@@ -560,7 +768,7 @@ function ns.InitUI()
             if mode == "craft" then
                 Tip.Show(self, "ANCHOR_RIGHT", e.name,
                     ("Owned: %d   Want: %d   Need: %d more\n%s"):format(e.have or 0, DB.target, e.need, e.crafters))
-            else
+            elseif mode == "stock" then
                 local lines = { ("Owned: %d   Want: %d%s"):format(e.have, DB.target, e.have < DB.target and ("   (" .. (DB.target - e.have) .. " short)") or "") }
                 if e.where and #e.where > 0 then
                     for _, l in ipairs(e.where) do lines[#lines + 1] = ("%s: %d"):format(l[1], l[2]) end
@@ -569,18 +777,24 @@ function ns.InitUI()
                 end
                 if e.crafters ~= "" then lines[#lines + 1] = "Can craft: " .. e.crafters end
                 Tip.Show(self, "ANCHOR_RIGHT", e.name, table.concat(lines, "\n"))
+            else
+                Tip.Show(self, "ANCHOR_RIGHT", e.name, e.tip)
             end
         end)
         r:SetScript("OnLeave", function(self) self.hl:Hide(); Tip.Hide() end)
         rows[i] = r
     end
 
-    emptyFS = Text(listFrame, 12, K.faint, "CENTER")
-    emptyFS:SetPoint("CENTER", listFrame, "CENTER", -5, 0)
-    emptyFS:SetWidth(460)
+    W.emptyFS = Text(listFrame, 12, K.faint, "CENTER")
+    W.emptyFS:SetPoint("CENTER", listFrame, "CENTER", -5, 10)
+    W.emptyFS:SetWidth(460)
+    W.emptyBtn = Button(listFrame, "Open Setup", 140, 26, true, function() GoTo("setup") end)
+    W.emptyBtn:SetPoint("TOP", W.emptyFS, "BOTTOM", 0, -12)
+    W.emptyBtn:Hide()
 
     -- slim scrollbar, same as Regional Edge
-    sb = CreateFrame("Slider", nil, listFrame)
+    local sb = CreateFrame("Slider", nil, listFrame)
+    W.sb = sb
     sb:SetPoint("TOPRIGHT")
     sb:SetPoint("BOTTOMRIGHT")
     sb:SetWidth(6)
@@ -604,33 +818,155 @@ function ns.InitUI()
     f:EnableMouseWheel(true)
     f:SetScript("OnMouseWheel", function(_, delta) sb:SetValue(sb:GetValue() - delta * 3) end)
 
-    -- footer ----------------------------------------------------------------
+    -- footer: a hint on the left, the craft-queue action on the right ----------
     local fline = f:CreateTexture(nil, "ARTWORK")
     fline:SetColorTexture(unpack(K.border))
     fline:SetHeight(1)
-    fline:SetPoint("BOTTOMLEFT", 14, 94)
-    fline:SetPoint("BOTTOMRIGHT", -14, 94)
+    fline:SetPoint("BOTTOMLEFT", 14, 40)
+    fline:SetPoint("BOTTOMRIGHT", -14, 40)
 
-    -- settings section ------------------------------------------------------
-    local setHead = Text(f, 10, K.dim)
-    setHead:SetPoint("BOTTOMLEFT", 14, 76)
-    setHead:SetText("SETTINGS")
+    W.footHint = Text(f, 11, K.faint)
+    W.footHint:SetPoint("BOTTOMLEFT", 14, 14)
 
-    guildCB = CheckBox(f, "Include guild banks in my stock", function(v)
+    W.csBtn = Button(f, "Import to CraftSim queue", 190, 24, false, NeedsLink(function() ns.ImportToCraftSim() end))
+    W.csBtn:SetPoint("BOTTOMRIGHT", -14, 8)
+    Tooltip(W.csBtn, "Import to CraftSim queue", "Adds every decor this character can craft and is short of (Want minus Owned) to CraftSim's Craft Queue. Needs CraftSim, and recipes recorded since this version (open each profession window once).")
+
+    W.listGroup = { W.h1, W.h2, W.h3, listFrame, fline, W.footHint }
+
+    ---------------------------------------------------------------------
+    -- Setup tab: link (both roles), then the options for the current role
+    ---------------------------------------------------------------------
+    W.setupPanel = CreateFrame("Frame", nil, f)
+    W.setupPanel:SetPoint("TOPLEFT", 14, -200)
+    W.setupPanel:SetPoint("BOTTOMRIGHT", -14, 14)
+    W.setupPanel:Hide()
+
+    local function SectionLabel(parent, text)
+        local t = Text(parent, 10, K.dim)
+        t:SetPoint("TOPLEFT", 12, -10)
+        t:SetText(text)
+        return t
+    end
+
+    -- link ------------------------------------------------------------------
+    local link = Box(W.setupPanel, K.card, K.border)
+    link:SetPoint("TOPLEFT")
+    link:SetPoint("TOPRIGHT")
+    link:SetHeight(120)
+    SectionLabel(link, "LINK YOUR OTHER ACCOUNT")
+    W.linkFS = Text(link, 11, K.dim, "RIGHT")
+    W.linkFS:SetPoint("TOPRIGHT", -12, -9)
+
+    local help = Text(link, 11, K.faint)
+    help:SetPoint("TOPLEFT", 12, -28)
+    help:SetWidth(WIDTH - 28 - 24)
+    help:SetJustifyV("TOP")
+    help:SetText("Log into a character on each account at the same time, type a character from the OTHER account here (Name-Realm, e.g. Alice-Frostmourne) and press Connect. Press Yes on the pop-up that appears there.")
+
+    local pbox = Box(link, K.input, K.border)
+    pbox:SetSize(330, 26)
+    pbox:SetPoint("BOTTOMLEFT", 12, 12)
+    W.partnerBox = CreateFrame("EditBox", nil, pbox)
+    SetFont(W.partnerBox, 13)
+    W.partnerBox:SetPoint("TOPLEFT", 8, -1)
+    W.partnerBox:SetPoint("BOTTOMRIGHT", -8, 1)
+    W.partnerBox:SetAutoFocus(false)
+    W.partnerBox:SetMaxLetters(64)
+    W.partnerBox:SetTextColor(unpack(K.text))
+    local function DoConnect()
+        if ns.SetPartner(W.partnerBox:GetText()) then ns.Ping() end
+        W.partnerBox:ClearFocus()
+    end
+    W.partnerBox:SetScript("OnEnterPressed", DoConnect)
+    W.partnerBox:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
+    W.partnerBox:SetScript("OnEditFocusGained", function() pbox:SetBackdropBorderColor(unpack(K.accent)) end)
+    W.partnerBox:SetScript("OnEditFocusLost", function() pbox:SetBackdropBorderColor(unpack(K.border)) end)
+
+    local connect = Button(link, "Connect", 90, 26, true, DoConnect)
+    connect:SetPoint("LEFT", pbox, "RIGHT", 8, 0)
+    Tooltip(connect, "Connect", "Saves the name and sends a test message. The other account needs to be logged in with DecorSync installed. It will ask you to confirm the first time.")
+
+    -- options: Seller gets the guild bank setting, Crafter gets the login request -
+    local opts = Box(W.setupPanel, K.card, K.border)
+    opts:SetPoint("TOPLEFT", link, "BOTTOMLEFT", 0, -10)
+    opts:SetPoint("TOPRIGHT", link, "BOTTOMRIGHT", 0, -10)
+    opts:SetHeight(86)
+    SectionLabel(opts, "OPTIONS")
+
+    W.guildCB = CheckBox(opts, "Include guild banks in my stock", function(v)
         ns.SetIncludeGuild(v)
     end)
-    guildCB:SetPoint("BOTTOMLEFT", 14, 50)
-    Tooltip(guildCB, "Include guild banks",
-        "Counts decor held in guild bank tabs you can view. Off by default.\nOpen each guild bank once so it is remembered (or use TradeSkillMaster). Applies on the account that sends the list - press 'Send my decor' again after changing it.")
+    W.guildCB:SetPoint("TOPLEFT", 12, -32)
+    local gd = Text(opts, 10, K.faint)
+    gd:SetPoint("TOPLEFT", 36, -52)
+    gd:SetWidth(WIDTH - 28 - 48)
+    gd:SetJustifyV("TOP")
+    gd:SetText("Counts decor in guild bank tabs you can view. Open each guild bank once. Press 'Send my decor' again after changing it.")
+    W.guildGroup = { W.guildCB, gd }
 
-    autoCB = CheckBox(f, "Ask for a fresh list when I log in", function(v) DB.autoRequest = v end)
-    autoCB:SetPoint("BOTTOMLEFT", 14, 24)
-    local scan = Button(f, "Scan profession window", 170, 24, false, function() ns.ScanRecipes(false) end)
-    scan:SetPoint("BOTTOMRIGHT", -14, 20)
-    local csBtn = Button(f, "Import to CraftSim queue", 170, 24, false, function() ns.ImportToCraftSim() end)
-    csBtn:SetPoint("BOTTOMRIGHT", -14, 52)
-    Tooltip(csBtn, "Import to CraftSim queue", "Adds every decor this character can craft and is short of (Want minus Owned) to CraftSim's Craft Queue. Needs CraftSim, and recipes recorded since this version (open each profession window once).")
-    Tooltip(scan, "Scan profession window", "Recipes are recorded automatically when you open a profession. Use this if one was missed.")
+    W.autoCB = CheckBox(opts, "Ask for a fresh list when I log in", function(v) DB.autoRequest = v end)
+    W.autoCB:SetPoint("TOPLEFT", 12, -32)
+    local ad = Text(opts, 10, K.faint)
+    ad:SetPoint("TOPLEFT", 36, -52)
+    ad:SetWidth(WIDTH - 28 - 48)
+    ad:SetText("Requests the decor list from the other account shortly after you log in.")
+    W.autoGroup = { W.autoCB, ad }
+
+    -- tools (Crafter only) --------------------------------------------------
+    W.tools = Box(W.setupPanel, K.card, K.border)
+    W.tools:SetPoint("TOPLEFT", opts, "BOTTOMLEFT", 0, -10)
+    W.tools:SetPoint("TOPRIGHT", opts, "BOTTOMRIGHT", 0, -10)
+    W.tools:SetHeight(76)
+    SectionLabel(W.tools, "TOOLS")
+    local scan = Button(W.tools, "Scan profession window", 170, 26, false, function() ns.ScanRecipes(false) end)
+    scan:SetPoint("TOPLEFT", 12, -32)
+    local sd = Text(W.tools, 10, K.faint)
+    sd:SetPoint("LEFT", scan, "RIGHT", 12, 0)
+    sd:SetPoint("RIGHT", W.tools, "RIGHT", -12, 0)
+    sd:SetJustifyV("MIDDLE")
+    sd:SetText("Recipes are recorded automatically when you open a profession. Use this if one was missed.")
+
+    ---------------------------------------------------------------------
+    -- First run: which kind of account is this?  (covers everything below the title bar)
+    ---------------------------------------------------------------------
+    local ch = Box(f, K.window, K.window)
+    W.chooser = ch
+    ch:SetPoint("TOPLEFT", 1, -38)
+    ch:SetPoint("BOTTOMRIGHT", -1, 1)
+    ch:SetFrameLevel(f:GetFrameLevel() + 30)
+    ch:EnableMouse(true)
+    ch:Hide()
+
+    local head = Text(ch, 18, K.text, "CENTER")
+    head:SetPoint("TOP", 0, -34)
+    head:SetText("What does this account do?")
+    local sub = Text(ch, 12, K.dim, "CENTER")
+    sub:SetPoint("TOP", head, "BOTTOM", 0, -10)
+    sub:SetWidth(480)
+    sub:SetText("DecorSync only shows what that role needs. You can switch any time with the Crafter and Seller buttons at the top.")
+
+    local function RoleCard(x, titleText, body, btnText, role)
+        local c = Box(ch, K.card, K.border)
+        c:SetSize((WIDTH - 28 - 12) / 2, 190)
+        c:SetPoint("TOPLEFT", x, -130)
+        local t = Text(c, 15, K.accent)
+        t:SetPoint("TOPLEFT", 16, -16)
+        t:SetText(titleText)
+        local b = Text(c, 12, K.dim)
+        b:SetPoint("TOPLEFT", 16, -46)
+        b:SetWidth((WIDTH - 28 - 12) / 2 - 32)
+        b:SetJustifyV("TOP")
+        b:SetText(body)
+        local btn = Button(c, btnText, (WIDTH - 28 - 12) / 2 - 32, 28, true, function() SetRole(role) end)
+        btn:SetPoint("BOTTOM", 0, 16)
+    end
+    RoleCard(14, "Seller account",
+        "This account owns the decor and sells it.\n\nYou'll see what DecorSync has recorded on your characters, and a button to send it to your crafting account.",
+        "This is my seller account", "seller")
+    RoleCard(14 + (WIDTH - 28 - 12) / 2 + 12, "Crafter account",
+        "This account has your crafters.\n\nYou'll see what to craft and what's in stock on the other account, and a button to get the decor list.",
+        "This is my crafter account", "crafter")
 
     f:SetScript("OnShow", Refresh)
     local acc = 0

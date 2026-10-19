@@ -2,6 +2,35 @@
 
 All notable changes between the supplied builds are recorded here, newest first.
 
+## [0.12.0] - 2026-10-19
+
+### Added
+- A first-run prompt asks what the account does: Seller (owns the decor) or Crafter (has your crafters). The answer is saved for the account.
+- A Crafter | Seller switch in the title bar changes between the two views at any time.
+- Seller view: a "Tracked stock" tab listing each character DecorSync has recorded (decor in bags, bank, mail and auctions, with when it was last updated), the warband bank, and any guild banks (marked as counted or not). Hover a row for the breakdown. Its two stat cards show characters tracked and total decor tracked.
+
+### Changed
+- Each view only shows what its role uses. Crafter: "Get decor list", the Decor to craft and In stock tabs, search, "Only what this character can craft", Want, "Import to CraftSim queue", "Ask for a fresh list when I log in" and "Scan profession window". Seller: "Send my decor", the Tracked stock tab and "Include guild banks in my stock".
+- Setup shows the account link for both roles, then only the options for the current role.
+- After choosing a role, the window opens on Setup until an account is linked.
+- `README.txt` has a new "Choose a role" section, and the guild bank setting is now described as being in the Seller view's Setup tab.
+- The `.toc` version is now 0.12.0 (was 0.11.0).
+
+## [0.11.0] - 2026-10-19
+
+### Changed
+- The window is reorganised into three tabs: Decor to craft, In stock and Setup. Same look as before (flat navy panels, underlined tabs, lime row bars).
+- "Get decor list" and "Send my decor" are now at the top of the window and always visible, with the status message beside them. Pressing either while no account is linked opens the Setup tab instead of printing an error.
+- A connection indicator in the title bar shows "Linked: Name-Realm" (green dot) or "Not linked" (amber dot). Click it to open Setup.
+- The Setup tab holds everything you only touch occasionally: the connection box and Connect button, the "Include guild banks in my stock" and "Ask for a fresh list when I log in" tick boxes (each with a short explanation), and "Scan profession window". The window opens on Setup until an account is linked.
+- The search box, the "Only what this character can craft" tick box and the Want counter now sit together on one row under the tabs.
+- "Import to CraftSim queue" moved to the footer and only shows on the Decor to craft tab. The footer also has a short hover hint for each tab.
+- The window is shorter (620 x 590, from 620 x 704) and the list shows 11 rows (was 10).
+- When no account is linked, an empty list says "Not linked to your other account yet." and offers an "Open Setup" button. The "No decor list yet" message now points at the buttons above.
+- The first status line no longer refers to a box above the list. It reads "Not linked yet. Open the Setup tab to link your other account.", or "Ready." once linked.
+- `README.txt` points the first-time setup and the guild bank setting at the Setup tab.
+- The `.toc` version is now 0.11.0 (was 1.7.1, which did not follow this changelog's numbering). Versions stay below 1.0.0 until release.
+
 ## [0.10.1] - 2026-10-19
 
 ### Fixed

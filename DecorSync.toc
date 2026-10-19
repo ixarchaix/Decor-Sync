@@ -2,7 +2,7 @@
 ## Title: DecorSync
 ## Notes: Sync your housing decor between two WoW accounts and see what your crafters should make.
 ## Author: you
-## Version: 1.7.1
+## Version: 0.12.0
 ## OptionalDeps: TradeSkillMaster, CraftSim
 ## SavedVariables: DecorSyncDB
 ## IconTexture: Interface\Icons\INV_Misc_Note_01
