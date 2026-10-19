@@ -1,0 +1,74 @@
+DECORSYNC 1.5 - setup
+
+INSTALL
+Copy the "DecorSync" folder into  World of Warcraft\_retail_\Interface\AddOns\
+(both accounts use the same folder if they share one WoW install).
+If WoW says it is out of date, tick "Load out of date AddOns" at character select.
+
+OPEN IT
+Click the minimap button (or the addon menu next to the minimap), or type /decorsync.
+
+FIRST-TIME SETUP (you only do this once)
+1. Log into a character on each account, at the same time.
+2. On either account, type the OTHER account's character into the top box
+   (Name-Realm, for example Alice-Frostmourne) and press Connect.
+3. On the other account a pop-up asks "Is that a character on your other account?" - press Yes.
+   You should see "Connected!". That's the link done. A crafter you log in with later
+   will ask the same question once.
+
+EVERY TIME
+- On the account with your CRAFTERS: press "Get decor list".
+  (Or on the account that owns the decor: press "Send my decor".)
+- Wait for the "Receiving x/y" counter to finish.
+- Open each profession window once on each crafter. Recipes are recorded automatically.
+- The list in the window shows what to craft, how many, and which characters can make it.
+  Use "Want" to change how many of each piece you want, and the tick box to only show
+  what the character you're on can craft.
+
+The list is saved, so you can check it later without the other account being online.
+
+WHAT COUNTS (changed in 1.4)
+Only SELLABLE stock counts: decor sitting in bags, bank, mail, auction listings and the
+warband bank on EVERY character of the owning account. Decor you have learned or placed in a
+house is NOT counted (you can't sell it). The game only lets an addon see the character you are
+logged into, so each character's holdings are remembered as you play. To get a character counted:
+  - log into it once (bags are read automatically),
+  - open its bank once, open its mailbox once, and open the auction house's Auctions tab once (DecorSync only reads, it never queries the AH itself).
+If TradeSkillMaster is installed on the owning account, its per-character bag/bank/mail/auction
+data is used instead for every character it knows about, so you don't need to visit them.
+/decorsync tsm shows what was read from it.
+Then press "Send my decor" (or "Get decor list" on the other account). Hover a row in the
+list to see Owned / Want / Need for that piece.
+
+DECOR ID DATABASE
+DecorIDs.lua (item IDs) and DecorNames.lua (decor names) hold what counts. An item counts if its ID OR its name is listed.
+Bags, bank, mail, auctions, the warband bank and TSM data are filtered through them. To add more, append to either list. "/decorsync item <id>" and "/decorsync find <name>" show whether something is in the database.
+
+GUILD BANKS (setting, off by default)
+In the window's SETTINGS section, tick "Include guild banks in my stock" (or type /decorsync guild on|off) on the
+account that owns the decor. When it is ticked, decor in the guild bank tabs you can view is counted, once per guild.
+Open each guild bank once and wait a few seconds while its tabs are read; it is then remembered. If TradeSkillMaster
+tracks the guild bank, its numbers are used too (the higher of the two). Press "Send my decor" again after changing the setting.
+/decorsync inv lists remembered guild banks, and /decorsync find <name> shows guild bank counts.
+
+CRAFTSIM CRAFT QUEUE
+Press "Import to CraftSim queue" (or /decorsync craftsim) on a crafter. Everything that character can craft and is
+below your "Want" is added to CraftSim's Craft Queue, with the amount still needed. Pressing it again updates the
+amounts instead of adding them twice. It only imports what the character you're logged into can craft, so do it once
+per crafter. Recipe IDs are saved when a profession window is opened, so open each profession once after updating.
+This reaches into CraftSim's own code (it has no public API for it), so if a CraftSim update changes things it may stop working.
+
+IN STOCK TAB
+The "In stock" tab lists every decor you hold to sell (even just 1; the number is amber while it is below your "Want"), and where it is:
+which character's bags / bank / mail / auction listings, or the warband bank. Hover a row for the full breakdown. The In stock tab is grouped by profession (from the recipes you have recorded).
+The search box filters both tabs.
+Both accounts must run 1.3, and the owning account has to send the list again before locations show.
+
+IF SOMETHING GOES WRONG
+- /decorsync debug on     shows what is sent and received
+- /decorsync dump         shows what the housing catalog returns (send me this if the scan finds 0 decor)
+- /decorsync find <name>  shows every count the addon has for a decor name, and where it came from
+- /decorsync tsm         shows what was read from TradeSkillMaster (send me this if the numbers are off)
+- /decorsync item <id>  shows how an item ID is resolved (catalog lookups, item class, TSM)
+- /decorsync inv         shows what is remembered per character (add "clear" to forget it)
+- /decorsync minimap      hides or shows the minimap button
